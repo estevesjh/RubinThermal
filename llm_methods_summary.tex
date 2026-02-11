@@ -1,0 +1,182 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{LLM-Inspired Methods for Temperature Prediction:\\Summary and Performance at 3-Hour Lead Time}
+\author{Rubin Observatory Thermal Control Project}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+\section{Overview}
+
+We explored several approaches inspired by Large Language Model (LLM) architectures for predicting sunset temperature at the Rubin Observatory site. These methods treat temperature time series as sequences analogous to text, applying embedding and attention-based techniques originally developed for natural language processing.
+
+\section{Methods}
+
+\subsection{Temperature Tokenization}
+
+Two tokenization strategies were implemented:
+
+\subsubsection{Discrete Bin Tokenization}
+Temperature values are discretized into 100 bins spanning the observed range ($\sim$-5°C to +20°C). Each bin becomes a ``token'' in a vocabulary, similar to how words are tokenized in language models.
+\begin{itemize}
+    \item Vocabulary size: 100 temperature tokens + 3 special tokens (PAD, SEP, CLS)
+    \item Bin width: $\sim$0.25°C
+\end{itemize}
+
+\subsubsection{ASCII String Tokenization}
+Temperatures are converted to ASCII strings with 0.1°C precision (e.g., ``+12.3'', ``-5.7''). This preserves the numerical structure while treating temperatures as ``words.''
+\begin{itemize}
+    \item Vocabulary size: $\sim$250 unique temperature strings
+    \item Precision: 0.1°C
+\end{itemize}
+
+\subsection{Sequence Models}
+
+\subsubsection{Embedding + LSTM}
+\begin{itemize}
+    \item 32-dimensional learned embeddings for each temperature token
+    \item 2-layer bidirectional LSTM with 64/128 hidden units
+    \item Attention mechanism for sequence summarization
+    \item Final prediction: current temperature + learned $\Delta T$
+\end{itemize}
+
+\subsubsection{Embedding + Transformer}
+\begin{itemize}
+    \item 32/64-dimensional embeddings with learned positional encoding
+    \item 2--3 layer transformer encoder with 4 attention heads
+    \item Mean pooling or final-position summary (analogous to [CLS] token)
+    \item Predicts temperature change from current to sunset
+\end{itemize}
+
+\subsection{Training Details}
+\begin{itemize}
+    \item Input: 6 hours of temperature history (24 readings at 15-min intervals) or 3 days of context
+    \item Train/test split: odd calendar days for training, even days for testing
+    \item 15\% of training data reserved for validation/early stopping
+    \item Optimizer: Adam with learning rate 0.001, ReduceLROnPlateau scheduler
+    \item Training epochs: 100 with early stopping
+\end{itemize}
+
+\section{Performance at 3-Hour Lead Time}
+
+Table~\ref{tab:results} summarizes prediction performance for sunset temperature when predictions are made 3 hours before sunset.
+
+\begin{table}[h]
+\centering
+\caption{Sunset Temperature Prediction Performance (3h Lead Time)}
+\label{tab:results}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Method} & \textbf{RMS (°C)} & \textbf{Bias (°C)} & \textbf{\% $<$1°C Error} \\
+\midrule
+\multicolumn{4}{l}{\textit{Baseline Methods}} \\
+Persistence (current temp) & 2.52 & +2.24 & --- \\
+\midrule
+\multicolumn{4}{l}{\textit{Traditional ML Methods}} \\
+Linear Regression & 1.07 & +0.10 & 70\% \\
+Random Forest & 1.09 & +0.04 & 70\% \\
+Gradient Boosting & 1.10 & +0.01 & 69\% \\
+\midrule
+\multicolumn{4}{l}{\textit{LLM-Inspired Methods}} \\
+ASCII Word LSTM (0.1°C precision) & 1.28 & +0.35 & $\sim$55\% \\
+ASCII Word LSTM (0.25°C precision) & 1.36 & +0.39 & $\sim$50\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Key Findings}
+
+\subsection{Performance Comparison}
+\begin{itemize}
+    \item LLM-inspired methods achieve $\sim$1.28--1.36°C RMS at 3h lead time
+    \item Traditional ML methods perform better: Random Forest achieves 1.09°C RMS
+    \item All methods improve substantially over persistence baseline (2.52°C RMS)
+    \item LLM methods show $\sim$50\% improvement over persistence, but are $\sim$20\% worse than Random Forest
+\end{itemize}
+
+\subsection{Embedding Analysis}
+The learned temperature embeddings show meaningful structure:
+\begin{itemize}
+    \item Adjacent temperature bins have high cosine similarity ($\sim$0.8--0.9)
+    \item PCA visualization shows smooth ordering by temperature value
+    \item The model learns that nearby temperatures are semantically similar
+\end{itemize}
+
+\subsection{Lead Time Dependence}
+Performance improves at shorter lead times. Reference values from traditional ML:
+\begin{center}
+\begin{tabular}{lcc}
+\toprule
+Lead Time & Random Forest RMS & Linear Regression RMS \\
+\midrule
+3 hours & 1.09°C & 1.07°C \\
+2 hours & 1.01°C & 0.94°C \\
+1 hour & 0.80°C & 0.71°C \\
+\bottomrule
+\end{tabular}
+\end{center}
+LLM methods follow similar trends but with $\sim$20\% higher RMS at each lead time.
+
+\section{Tokenization Precision Comparison}
+
+We compared two tokenization precisions for the ASCII string approach:
+
+\begin{table}[h]
+\centering
+\caption{Effect of Tokenization Precision on Prediction Performance (3h Lead Time)}
+\label{tab:precision}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{0.1°C} & \textbf{0.25°C} & \textbf{Difference} \\
+\midrule
+Vocabulary size & 323 words & 133 words & +190 \\
+RMS Error & 1.282°C & 1.359°C & $-$0.077°C \\
+MAE & 1.003°C & 1.087°C & $-$0.085°C \\
+Bias & +0.353°C & +0.387°C & $-$0.034°C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Key Observations}
+
+\begin{itemize}
+    \item \textbf{Finer precision helps modestly}: 0.1°C precision reduces RMS by 0.077°C compared to 0.25°C (approximately 6\% relative improvement).
+
+    \item \textbf{Vocabulary trade-off}: Finer precision requires 2.4$\times$ larger vocabulary (323 vs 133 words), increasing model complexity and training data requirements.
+
+    \item \textbf{Diminishing returns}: The 0.077°C improvement is small compared to the $\sim$1.3°C total error, indicating that tokenization precision is not the limiting factor.
+
+    \item \textbf{Practical recommendation}: 0.1°C precision provides a reasonable balance between granularity and vocabulary size. Going coarser than 0.25°C would likely degrade performance more significantly.
+\end{itemize}
+
+\section{Conclusions}
+
+\begin{enumerate}
+    \item \textbf{LLM-inspired approaches work} for temperature prediction, achieving RMS errors of $\sim$1.28°C at 3-hour lead time with 0.1°C tokenization precision.
+
+    \item \textbf{Traditional ML methods perform better}: Random Forest achieves 1.09°C RMS---about 20\% lower error than LLM methods with much simpler implementation.
+
+    \item \textbf{Learned embeddings are interpretable}: the model discovers that temperatures form an ordered, continuous space.
+
+    \item \textbf{Fundamental limits}: Weather unpredictability constrains improvement potential. The $\sim$1°C RMS floor for traditional ML appears to be a physical limit for 3-hour predictions at this site.
+
+    \item \textbf{Practical recommendation}: For operational use, Random Forest or Linear Regression provide better accuracy with lower computational cost and simpler deployment. LLM-inspired methods offer no advantage for this structured regression task.
+\end{enumerate}
+
+\section{Implementation Notes}
+
+Code is available in:
+\begin{itemize}
+    \item \texttt{llm\_embedding\_prediction.py} -- Discrete bin tokenization with LSTM/Transformer
+    \item \texttt{ascii\_llm\_expanded.py} -- ASCII string tokenization with multiple lead times
+    \item \texttt{ascii\_temperature\_llm.py} -- Original ASCII approach
+\end{itemize}
+
+\end{document}

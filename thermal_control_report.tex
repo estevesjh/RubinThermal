@@ -1,0 +1,859 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{booktabs}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{algorithm}
+\usepackage{algpseudocode}
+\usepackage{siunitx}
+
+\title{Thermal Control Strategy for Rubin Observatory Primary Mirror:\\
+Setpoint Optimization for Sunset Temperature Matching}
+\author{Technical Report}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents a comparative analysis of thermal control strategies for driving the Rubin Observatory primary mirror to match the predicted ambient temperature at sunset. Using a first-order thermal model with a 2-hour time constant and backtesting against 771 days of historical data, we evaluate six control strategies ranging from simple setpoint tracking to model predictive control. Counter-intuitively, we find that simple strategies outperform complex ones, achieving 0.26°C RMS error at sunset with appropriate cold bias. We provide a complete operational algorithm for computing mirror setpoints as a function of current conditions and evolving sunset temperature predictions.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================================
+\section{Introduction}
+%==============================================================================
+
+Thermal equilibrium between the telescope primary mirror and ambient air at sunset is critical for optimal image quality. Temperature differences between the mirror surface and surrounding air create convective turbulence that degrades seeing. The operational requirement is to minimize $|T_{\text{mirror}} - T_{\text{ambient}}|$ at the moment observations begin.
+
+Additionally, there is an asymmetric preference: a mirror that is \textbf{slightly cold} relative to ambient is preferable to one that is \textbf{slightly warm}. A cold mirror produces less convective turbulence than a warm mirror of equal temperature offset.
+
+This report addresses the control problem: given predictions of sunset temperature that improve as sunset approaches, what is the optimal strategy for adjusting the mirror thermal setpoint throughout the afternoon?
+
+%==============================================================================
+\section{System Model}
+%==============================================================================
+
+\subsection{Thermal Dynamics}
+
+The mirror thermal response is modeled as a first-order system with time constant $\tau = 2$ hours:
+
+\begin{equation}
+\frac{dT_{\text{mirror}}}{dt} = \frac{T_{\text{setpoint}} - T_{\text{mirror}}}{\tau}
+\label{eq:thermal_dynamics}
+\end{equation}
+
+The thermal control system drives conditioned air across the mirror surface to force the mirror temperature toward the setpoint. The system has sufficient heating/cooling capacity ($\pm 2$°C/hour or greater) to overcome natural thermal drift.
+
+\subsection{Prediction Model}
+
+Sunset temperature predictions are available with uncertainty that decreases as sunset approaches:
+
+\begin{equation}
+\sigma_{\text{pred}}(t) = 0.30 + 0.25 \times t_{\text{lead}}
+\label{eq:prediction_uncertainty}
+\end{equation}
+
+where $t_{\text{lead}}$ is the time until sunset in hours. This yields:
+\begin{itemize}
+    \item At 3 hours before sunset: $\sigma \approx 1.05$°C
+    \item At 1 hour before sunset: $\sigma \approx 0.55$°C
+    \item At 15 minutes before sunset: $\sigma \approx 0.36$°C
+\end{itemize}
+
+The prediction is updated every 15 minutes with new atmospheric data.
+
+\subsection{Key System Parameters}
+
+\begin{table}[h]
+\centering
+\caption{Thermal Control System Parameters}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Parameter} & \textbf{Symbol} & \textbf{Value} \\
+\midrule
+Thermal time constant & $\tau$ & 2.0 hours \\
+Heating/cooling capacity & $\dot{T}_{\max}$ & $\pm 2$°C/hour \\
+Setpoint update interval & $\Delta t$ & 15 minutes \\
+Control horizon & --- & 4 hours before sunset \\
+Prediction uncertainty (3h) & $\sigma_{3h}$ & 1.05°C \\
+Prediction uncertainty (1h) & $\sigma_{1h}$ & 0.55°C \\
+\bottomrule
+\end{tabular}
+\label{tab:parameters}
+\end{table}
+
+%==============================================================================
+\section{Control Strategies Evaluated}
+%==============================================================================
+
+Six control strategies were implemented and tested:
+
+\subsection{Strategy 1: Simple Setpoint Tracking}
+
+The simplest approach: set the mirror target to the current prediction.
+
+\begin{equation}
+T_{\text{setpoint}} = T_{\text{pred,sunset}}
+\end{equation}
+
+This strategy makes no compensation for thermal lag or prediction uncertainty.
+
+\subsection{Strategy 2: Simple Tracking with Cold Bias}
+
+Add a cold bias proportional to prediction uncertainty:
+
+\begin{equation}
+T_{\text{setpoint}} = T_{\text{pred,sunset}} - k_{\text{cold}} \cdot \sigma_{\text{pred}}
+\label{eq:cold_bias}
+\end{equation}
+
+where $k_{\text{cold}} = 0.2$ is a tunable parameter. This shifts the distribution toward cold outcomes (preferred) while leveraging the fact that uncertainty decreases as sunset approaches.
+
+\subsection{Strategy 3: Feedforward with Lead Compensation}
+
+Classical feedforward control compensates for thermal lag:
+
+\begin{equation}
+T_{\text{setpoint}} = T_{\text{pred,sunset}} + \tau \cdot \frac{dT_{\text{pred}}}{dt} - k_{\text{cold}} \cdot \sigma_{\text{pred}}
+\end{equation}
+
+The lead term $\tau \cdot dT/dt$ anticipates future temperature changes.
+
+\subsection{Strategy 4: PID with Feedforward}
+
+Proportional-Integral-Derivative control with feedforward:
+
+\begin{equation}
+T_{\text{setpoint}} = T_{\text{target}} + K_p \cdot e + K_i \int e \, dt + K_d \frac{de}{dt} + \tau \cdot \frac{dT_{\text{target}}}{dt}
+\end{equation}
+
+where $e = T_{\text{pred,sunset}} - T_{\text{mirror}}$ is the tracking error. Gains used: $K_p = 0.5$, $K_i = 0.1$/hour, $K_d = 0.3$ hours.
+
+\subsection{Strategy 5: Model Predictive Control (MPC)}
+
+Optimize over a receding horizon with asymmetric cost:
+
+\begin{equation}
+J = \sum_{k=0}^{N} \left[ w_{\text{err}} \cdot L(e_k) + w_{\text{rate}} \cdot |\Delta T_{\text{sp},k}|^2 \right]
+\end{equation}
+
+where $L(e)$ is an asymmetric loss function penalizing warm errors 30\% more than cold:
+
+\begin{equation}
+L(e) = \begin{cases}
+e^2 & \text{if } e < 0 \text{ (cold)} \\
+1.3 \cdot e^2 & \text{if } e \geq 0 \text{ (warm)}
+\end{cases}
+\end{equation}
+
+\subsection{Strategy 6: Adaptive Control}
+
+Switch between conservative and aggressive modes based on prediction confidence:
+
+\begin{equation}
+T_{\text{setpoint}} = \begin{cases}
+T_{\text{pred}} - 0.3 \cdot \sigma & \text{if } |dT/dt| > 0.15\text{°C/h (unstable)} \\
+T_{\text{pred}} + 0.5\tau \cdot dT/dt - 0.2 \cdot \sigma & \text{otherwise}
+\end{cases}
+\end{equation}
+
+%==============================================================================
+\section{Simulation Methodology}
+%==============================================================================
+
+\subsection{Historical Data}
+
+Backtesting used 771 days of environmental data from Cerro Pachón spanning 2022--2025. Even-numbered calendar days (385 days) were used for testing to avoid overfitting.
+
+\subsection{Simulation Protocol}
+
+For each test day:
+\begin{enumerate}
+    \item Initialize simulation 4 hours before sunset
+    \item Set initial mirror temperature to ambient
+    \item Every 15 minutes:
+    \begin{itemize}
+        \item Generate prediction with realistic noise: $T_{\text{pred}} = T_{\text{actual}} + \mathcal{N}(0, \sigma_{\text{pred}}^2)$
+        \item Compute setpoint using control strategy
+        \item Propagate thermal dynamics (Equation~\ref{eq:thermal_dynamics})
+    \end{itemize}
+    \item Record final mirror temperature error at sunset
+\end{enumerate}
+
+\subsection{Performance Metrics}
+
+\begin{itemize}
+    \item \textbf{RMS Error}: Root-mean-square of $T_{\text{mirror}} - T_{\text{ambient}}$ at sunset
+    \item \textbf{Bias}: Mean signed error (positive = warm)
+    \item \textbf{95th Percentile}: Worst-case error (excludes outliers)
+    \item \textbf{\% Warm}: Fraction of days ending warm (to be minimized)
+\end{itemize}
+
+%==============================================================================
+\section{Results}
+%==============================================================================
+
+\subsection{Performance Comparison}
+
+\begin{table}[h]
+\centering
+\caption{Control Strategy Performance Comparison (385 test days)}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Strategy} & \textbf{RMS (°C)} & \textbf{Bias (°C)} & \textbf{95\%ile (°C)} & \textbf{\% Warm} \\
+\midrule
+\textbf{Simple + Cold Bias} & \textbf{0.261} & +0.072 & \textbf{0.53} & \textbf{59.9\%} \\
+Simple Tracking & 0.376 & +0.272 & 0.72 & 84.9\% \\
+Adaptive & 0.581 & $-0.496$ & 1.00 & 5.3\% \\
+MPC & 0.712 & +0.569 & 1.20 & 90.5\% \\
+PID + Feedforward & 0.815 & $-0.692$ & 1.38 & 6.4\% \\
+Feedforward & 0.926 & $-0.774$ & 1.58 & 4.8\% \\
+\bottomrule
+\end{tabular}
+\label{tab:results}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig31_thermal_control_comparison.png}
+\caption{Thermal control strategy comparison. (A) RMS error by strategy. (B) Warm/cold distribution. (C) Error probability distributions. (D) Example day showing mirror tracking ambient. (E) Worst-case (95th percentile) performance.}
+\label{fig:comparison}
+\end{figure}
+
+\subsection{Key Findings}
+
+\subsubsection{Simple Strategies Outperform Complex Ones}
+
+The counter-intuitive result is that feedforward and PID strategies \textbf{increase} error rather than reduce it. The explanation lies in the relationship between the thermal time constant and prediction horizon:
+
+\begin{itemize}
+    \item \textbf{Thermal time constant}: $\tau = 2$ hours
+    \item \textbf{Control horizon}: 4 hours before sunset
+    \item \textbf{Time for equilibration}: $\sim 3\tau = 6$ hours (to 95\% of setpoint)
+\end{itemize}
+
+With a 4-hour control window, the mirror has ample time to reach thermal equilibrium with any reasonable setpoint. The system is \textbf{not rate-limited}---it can track changing predictions effectively.
+
+Feedforward control adds lead compensation ($\tau \cdot dT/dt$) to anticipate future changes. However, this is counterproductive when the system can already track changes in real time. The lead term causes \textbf{overshooting}:
+
+\begin{itemize}
+    \item If sunset temperature is predicted to drop, feedforward drives the setpoint even lower
+    \item By the time sunset arrives, the mirror has overshot the target
+    \item Result: large negative (cold) bias
+\end{itemize}
+
+\subsubsection{Cold Bias Improves Both Accuracy and Distribution}
+
+Adding a small cold bias ($0.2 \times \sigma$) improves performance in two ways:
+
+\begin{enumerate}
+    \item \textbf{Shifts distribution toward cold}: Reduces warm fraction from 85\% to 60\%
+    \item \textbf{Reduces RMS error}: From 0.376°C to 0.261°C (30\% improvement)
+\end{enumerate}
+
+The second effect arises because the bias is proportional to $\sigma_{\text{pred}}$, which decreases as sunset approaches. Early in the afternoon (high uncertainty), we target conservatively cold. As predictions improve, the cold offset shrinks and we converge toward the true value.
+
+\subsubsection{Error is Dominated by Prediction Uncertainty}
+
+The fundamental limit on performance is prediction accuracy, not thermal control dynamics. With $\sigma_{\text{pred}} \approx 0.3$--$1.0$°C depending on lead time, no control strategy can achieve sub-0.2°C RMS error.
+
+The thermal system successfully equilibrates to whatever setpoint we command; the question is whether that setpoint is correct.
+
+%==============================================================================
+\section{Recommended Control Algorithm}
+%==============================================================================
+
+Based on simulation results, we recommend the \textbf{Simple Tracking with Cold Bias} strategy. This section provides the complete operational algorithm.
+
+\subsection{Algorithm Overview}
+
+\begin{algorithm}[H]
+\caption{Mirror Thermal Setpoint Control}
+\label{alg:setpoint}
+\begin{algorithmic}[1]
+\Require Current time $t$, sunset time $t_{\text{sunset}}$, predicted sunset temperature $T_{\text{pred}}$
+\Ensure Mirror thermal setpoint $T_{\text{setpoint}}$
+\State $t_{\text{lead}} \gets t_{\text{sunset}} - t$ \Comment{Hours until sunset}
+\State $\sigma \gets 0.30 + 0.25 \times t_{\text{lead}}$ \Comment{Prediction uncertainty}
+\State $k_{\text{cold}} \gets 0.20$ \Comment{Cold bias factor (tunable)}
+\State $T_{\text{setpoint}} \gets T_{\text{pred}} - k_{\text{cold}} \times \sigma$
+\State \Return $T_{\text{setpoint}}$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Detailed Setpoint Formula}
+
+The recommended setpoint at any time is:
+
+\begin{equation}
+\boxed{T_{\text{setpoint}}(t) = T_{\text{pred,sunset}}(t) - 0.20 \times (0.30 + 0.25 \times t_{\text{lead}})}
+\label{eq:recommended}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $T_{\text{pred,sunset}}(t)$ is the current best prediction for sunset temperature
+    \item $t_{\text{lead}} = t_{\text{sunset}} - t$ is hours until sunset
+\end{itemize}
+
+Expanding for specific lead times:
+
+\begin{table}[h]
+\centering
+\caption{Setpoint Cold Offset by Lead Time}
+\begin{tabular}{ccc}
+\toprule
+\textbf{Lead Time} & \textbf{$\sigma$ (°C)} & \textbf{Cold Offset (°C)} \\
+\midrule
+4 hours & 1.30 & 0.26 \\
+3 hours & 1.05 & 0.21 \\
+2 hours & 0.80 & 0.16 \\
+1 hour & 0.55 & 0.11 \\
+30 min & 0.43 & 0.09 \\
+15 min & 0.36 & 0.07 \\
+\bottomrule
+\end{tabular}
+\label{tab:offsets}
+\end{table}
+
+\subsection{Example Implementation}
+
+\begin{verbatim}
+def compute_mirror_setpoint(t_current, t_sunset, T_pred_sunset):
+    """
+    Compute optimal mirror thermal setpoint.
+
+    Parameters
+    ----------
+    t_current : datetime
+        Current time
+    t_sunset : datetime
+        Sunset time
+    T_pred_sunset : float
+        Current prediction for sunset temperature (°C)
+
+    Returns
+    -------
+    T_setpoint : float
+        Mirror thermal setpoint (°C)
+    """
+    # Calculate lead time in hours
+    t_lead = (t_sunset - t_current).total_seconds() / 3600.0
+
+    # Prediction uncertainty model
+    sigma = 0.30 + 0.25 * t_lead
+
+    # Cold bias factor (tunable, nominal = 0.20)
+    k_cold = 0.20
+
+    # Compute setpoint with cold bias
+    T_setpoint = T_pred_sunset - k_cold * sigma
+
+    return T_setpoint
+\end{verbatim}
+
+\subsection{Operational Procedure}
+
+\begin{enumerate}
+    \item \textbf{4 hours before sunset}: Begin thermal control
+    \begin{itemize}
+        \item Obtain initial sunset temperature prediction
+        \item Compute setpoint: $T_{\text{sp}} = T_{\text{pred}} - 0.26$°C
+        \item Command thermal system to setpoint
+    \end{itemize}
+
+    \item \textbf{Every 15 minutes}: Update setpoint
+    \begin{itemize}
+        \item Obtain updated sunset temperature prediction
+        \item Recompute setpoint using Equation~\ref{eq:recommended}
+        \item Command thermal system to new setpoint
+    \end{itemize}
+
+    \item \textbf{At sunset}: Final state
+    \begin{itemize}
+        \item Expected mirror temperature error: $< 0.3$°C RMS
+        \item Expected warm fraction: $\sim 60\%$ of nights
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Handling Special Cases}
+
+\subsubsection{Rapid Temperature Changes}
+
+When predictions show rapid temperature changes ($|dT_{\text{pred}}/dt| > 0.5$°C/hour), consider increasing the cold bias:
+
+\begin{equation}
+k_{\text{cold,adjusted}} = 0.20 + 0.10 \times \mathbf{1}_{|dT/dt| > 0.5}
+\end{equation}
+
+This provides additional margin during unstable conditions.
+
+\subsubsection{Near Sunset}
+
+Within 30 minutes of sunset, the prediction uncertainty is low ($\sigma < 0.4$°C). The cold bias becomes negligible ($< 0.08$°C), and the setpoint converges to the raw prediction:
+
+\begin{equation}
+\lim_{t \to t_{\text{sunset}}} T_{\text{setpoint}} = T_{\text{pred,sunset}}
+\end{equation}
+
+\subsubsection{Prediction Failures}
+
+If the prediction system fails, fall back to a conservative estimate:
+
+\begin{equation}
+T_{\text{setpoint,fallback}} = T_{\text{ambient,current}} - 0.5\text{°C}
+\end{equation}
+
+This assumes typical cooling of $\sim 0.5$°C by sunset and adds cold margin.
+
+%==============================================================================
+\section{Why Complex Control Fails}
+%==============================================================================
+
+It is instructive to understand why sophisticated control strategies underperform.
+
+\subsection{Feedforward Overshooting}
+
+Feedforward control assumes the system cannot respond quickly enough to track changing references. The lead compensation term:
+
+\begin{equation}
+\Delta T_{\text{ff}} = \tau \cdot \frac{dT_{\text{pred}}}{dt}
+\end{equation}
+
+shifts the setpoint in the direction of predicted change. However:
+
+\begin{itemize}
+    \item With $\tau = 2$ hours and 4-hour horizon, the system reaches 86\% of setpoint in 4 hours
+    \item The mirror \textit{can} track the changing prediction
+    \item Feedforward causes unnecessary anticipation, leading to overshoot
+\end{itemize}
+
+In our tests, feedforward produced $-0.77$°C bias (too cold) with 0.93°C RMS---worse than doing nothing.
+
+\subsection{MPC Limitations}
+
+Model predictive control optimizes over a horizon, but faces challenges:
+
+\begin{itemize}
+    \item \textbf{Model mismatch}: True prediction uncertainty is not perfectly known
+    \item \textbf{Optimization complexity}: May find local minima
+    \item \textbf{Asymmetric cost tuning}: Difficult to tune penalty weights
+\end{itemize}
+
+MPC achieved 0.71°C RMS with 91\% warm bias---the asymmetric penalty was insufficient to shift the distribution cold.
+
+\subsection{The Fundamental Insight}
+
+\begin{quote}
+\textit{When thermal dynamics are fast relative to the prediction horizon, the control problem reduces to prediction accuracy. Sophisticated control cannot compensate for prediction uncertainty.}
+\end{quote}
+
+The mirror equilibrates to the setpoint faster than predictions improve. Therefore, the optimal strategy is simply:
+
+\begin{enumerate}
+    \item Use the best available prediction
+    \item Add a small cold bias to favor the preferred direction
+    \item Update frequently as predictions improve
+\end{enumerate}
+
+%==============================================================================
+\section{Sensitivity Analysis}
+%==============================================================================
+
+\subsection{Cold Bias Factor}
+
+The cold bias factor $k_{\text{cold}}$ trades off between RMS error and warm fraction:
+
+\begin{table}[h]
+\centering
+\caption{Sensitivity to Cold Bias Factor}
+\begin{tabular}{ccc}
+\toprule
+$k_{\text{cold}}$ & RMS (°C) & \% Warm \\
+\midrule
+0.00 & 0.376 & 84.9\% \\
+0.10 & 0.301 & 72.4\% \\
+\textbf{0.20} & \textbf{0.261} & \textbf{59.9\%} \\
+0.30 & 0.252 & 47.1\% \\
+0.40 & 0.273 & 35.6\% \\
+0.50 & 0.318 & 26.2\% \\
+\bottomrule
+\end{tabular}
+\label{tab:sensitivity}
+\end{table}
+
+The optimal range is $k_{\text{cold}} \in [0.2, 0.3]$. Values above 0.4 begin to degrade RMS performance.
+
+\subsection{Thermal Time Constant}
+
+If the true time constant differs from 2 hours:
+
+\begin{itemize}
+    \item \textbf{$\tau < 2$ hours}: Simple control works even better (faster equilibration)
+    \item \textbf{$\tau > 3$ hours}: Feedforward may become beneficial
+\end{itemize}
+
+For $\tau > 4$ hours, the system becomes rate-limited and lead compensation provides value. The crossover point is approximately $\tau \approx t_{\text{horizon}} / 2$.
+
+\subsection{Update Frequency}
+
+Increasing update frequency (e.g., 5 minutes instead of 15) provides marginal improvement ($\sim 5\%$ RMS reduction). The dominant factor is prediction quality, which updates every 15 minutes based on new atmospheric data.
+
+%==============================================================================
+\section{Full Night Simulation}
+%==============================================================================
+
+The preceding analysis focused on achieving the correct temperature at sunset. However, maintaining thermal equilibrium throughout the observing night (sunset to sunrise) is equally important. This section presents results from a comprehensive simulation spanning 770 complete nights.
+
+\subsection{Overnight Control Strategy}
+
+After sunset, there is no longer a ``predicted'' target temperature---we simply track the current ambient temperature in real time:
+
+\begin{equation}
+T_{\text{setpoint,night}} = T_{\text{ambient,current}} - k_{\text{cold,night}}
+\label{eq:overnight}
+\end{equation}
+
+where $k_{\text{cold,night}} = 0.10$°C provides a small cold bias. This is smaller than the pre-sunset bias because we are tracking a known (measured) quantity rather than a prediction.
+
+\subsection{Simulation Results}
+
+Table~\ref{tab:fullnight} summarizes performance across 770 simulated nights.
+
+\begin{table}[h]
+\centering
+\caption{Full Night Simulation Performance (770 nights)}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Metric} & \textbf{At Sunset} & \textbf{Overnight} \\
+\midrule
+RMS Error & 0.48°C & 0.52°C \\
+Mean Bias & $-0.00$°C & $+0.24$°C \\
+95th Percentile & 0.95°C & --- \\
+Mean Nightly Max & --- & 1.07°C \\
+Warm Fraction & 48\% & --- \\
+Worst Night RMS & --- & 1.91°C \\
+\bottomrule
+\end{tabular}
+\label{tab:fullnight}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig32_full_night_simulation.png}
+\caption{Full night thermal control simulation. Top row: Six example nights showing ambient (blue), mirror (green), and setpoint (red dashed) temperatures from 4 hours before sunset through 10 hours after. Bottom left: Distribution of temperature errors at sunset. Bottom center: Distribution of overnight RMS tracking errors. Bottom right: Performance summary.}
+\label{fig:fullnight}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig33_thermal_performance_detail.png}
+\caption{Detailed performance analysis. (A) Example night showing prediction uncertainty band (magenta) converging to actual sunset temperature. (B) Temperature error timeline showing warm (coral) and cold (blue) periods. (C) Aggregated RMS error and bias vs time relative to sunset. (D) Summary performance metrics.}
+\label{fig:detail}
+\end{figure}
+
+\subsection{Example Days Across Seasons}
+
+To illustrate algorithm performance under varying conditions, Figure~\ref{fig:seasonal} shows simulations for nine representative nights spanning different seasons.
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig34_example_days_overview.png}
+\caption{Thermal control simulation across seasons. Each panel shows ambient temperature (blue), sunset prediction with uncertainty band (magenta), mirror setpoint (red dashed), and simulated mirror temperature (green) for one night. Sunset temperatures range from 0.1°C (winter) to 19.1°C (summer). Vertical orange line marks sunset.}
+\label{fig:seasonal}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig35_detailed_examples.png}
+\caption{Detailed view of four representative nights. Labels show sunset error and overnight RMS. The prediction uncertainty band (magenta) narrows as sunset approaches, demonstrating how the algorithm leverages improving predictions.}
+\label{fig:detailed_examples}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig36_presunset_detail.png}
+\caption{Pre-sunset period detail showing prediction convergence. Initial prediction errors at 4 hours before sunset (annotated) are reduced as predictions refine. The orange dashed line shows actual sunset temperature; the mirror (green) tracks the setpoint (red) while approaching this target.}
+\label{fig:presunset}
+\end{figure}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig37_algorithm_operation.png}
+\caption{Complete algorithm operation for one night. Top: All temperatures with pre-sunset (yellow) and overnight (blue) phases. Middle: Temperature error showing warm (coral) and cold (light blue) periods. Bottom: Algorithm components showing prediction uncertainty decreasing pre-sunset and constant cold bias overnight.}
+\label{fig:algorithm}
+\end{figure}
+
+\subsection{Key Observations}
+
+\subsubsection{Overnight Warm Bias}
+
+The overnight tracking shows a systematic warm bias of $+0.24$°C despite the $-0.10$°C cold setpoint offset. This occurs because:
+
+\begin{itemize}
+    \item Ambient temperature typically \textit{decreases} throughout the night
+    \item The mirror's 2-hour thermal lag causes it to trail behind the cooling ambient
+    \item The small cold bias partially compensates but does not eliminate the lag
+\end{itemize}
+
+Figure~\ref{fig:detail}C shows this effect clearly: after sunset, the bias becomes positive and remains so throughout the night.
+
+\subsubsection{Thermal Lag During Cooling}
+
+For a first-order system tracking a ramp:
+
+\begin{equation}
+\text{Steady-state lag} = \tau \times \frac{dT_{\text{ambient}}}{dt}
+\end{equation}
+
+With $\tau = 2$ hours and typical nighttime cooling of $-0.3$°C/hour, the expected lag is:
+
+\begin{equation}
+\text{Lag} = 2 \times 0.3 = 0.6\text{°C (warm)}
+\end{equation}
+
+This matches the observed overnight bias plus the deliberate cold offset: $0.24 + 0.10 \approx 0.34$°C, somewhat less than the theoretical maximum due to variable cooling rates.
+
+\subsubsection{Improving Overnight Tracking}
+
+To reduce overnight warm bias, we could increase the cold bias or add feedforward compensation for the cooling rate:
+
+\begin{equation}
+T_{\text{setpoint,night}} = T_{\text{ambient}} - k_{\text{cold}} + k_{\text{ff}} \times \frac{dT_{\text{ambient}}}{dt}
+\label{eq:overnight_ff}
+\end{equation}
+
+With $k_{\text{ff}} = \tau = 2$ hours, this would theoretically eliminate the tracking lag. However, measuring the instantaneous cooling rate adds noise, so a partial compensation ($k_{\text{ff}} \approx 1$ hour) may be preferable.
+
+\subsection{Complete Operational Algorithm}
+
+Combining the pre-sunset and overnight strategies:
+
+\begin{algorithm}[H]
+\caption{Complete Night Thermal Control}
+\label{alg:fullnight}
+\begin{algorithmic}[1]
+\Require Current time $t$, sunset time $t_{\text{sunset}}$, prediction $T_{\text{pred}}$, ambient $T_{\text{amb}}$
+\If{$t < t_{\text{sunset}}$} \Comment{Pre-sunset phase}
+    \State $t_{\text{lead}} \gets (t_{\text{sunset}} - t)$ in hours
+    \State $\sigma \gets 0.30 + 0.25 \times t_{\text{lead}}$
+    \State $T_{\text{setpoint}} \gets T_{\text{pred}} - 0.20 \times \sigma$
+\Else \Comment{Overnight phase}
+    \State $T_{\text{setpoint}} \gets T_{\text{amb}} - 0.10$
+\EndIf
+\State \Return $T_{\text{setpoint}}$
+\end{algorithmic}
+\end{algorithm}
+
+This algorithm achieves:
+\begin{itemize}
+    \item \textbf{At sunset}: 0.48°C RMS error, 48\% warm
+    \item \textbf{Overnight}: 0.52°C RMS tracking error
+    \item \textbf{Simplicity}: No state estimation, no complex optimization
+\end{itemize}
+
+%==============================================================================
+\section{Conclusions}
+%==============================================================================
+
+\subsection{Summary of Findings}
+
+\begin{enumerate}
+    \item \textbf{Simple control is optimal}: With a 2-hour thermal time constant and 4-hour control horizon, sophisticated feedforward and MPC strategies degrade performance for the pre-sunset phase.
+
+    \item \textbf{Cold bias improves accuracy}: A bias of $0.2 \times \sigma_{\text{pred}}$ before sunset reduces RMS error while shifting the distribution toward the preferred cold side.
+
+    \item \textbf{Prediction dominates sunset error}: The fundamental limit at sunset is prediction accuracy ($\sim 1$°C at 3 hours, $\sim 0.3$°C at 15 minutes). Control cannot compensate for prediction uncertainty.
+
+    \item \textbf{Overnight tracking}: Simple ambient tracking achieves 0.52°C RMS throughout the night, with a systematic warm bias due to thermal lag during cooling.
+
+    \item \textbf{Full night performance}: Using the recommended two-phase algorithm:
+    \begin{itemize}
+        \item At sunset: 0.48°C RMS error, 48\% warm
+        \item Overnight: 0.52°C RMS tracking error
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Operational Recommendation}
+
+Implement the two-phase control algorithm (Algorithm~\ref{alg:fullnight}):
+
+\textbf{Pre-sunset} (4 hours before sunset until sunset):
+\begin{equation*}
+T_{\text{setpoint}} = T_{\text{pred,sunset}} - 0.20 \times (0.30 + 0.25 \times t_{\text{lead}})
+\end{equation*}
+
+\textbf{Overnight} (sunset until sunrise):
+\begin{equation*}
+T_{\text{setpoint}} = T_{\text{ambient,current}} - 0.10\text{°C}
+\end{equation*}
+
+Update setpoints every 15 minutes throughout both phases. This achieves near-optimal performance with minimal complexity and no complex state estimation.
+
+%==============================================================================
+\section{Rate-Matching Control}
+%==============================================================================
+
+An enhanced control strategy can match not only the sunset temperature but also its rate of change. This section presents results from extending the prediction system and control algorithm to include rate matching.
+
+\subsection{Rate Prediction}
+
+A separate Random Forest model was trained to predict the rate of temperature change at sunset:
+
+\begin{table}[h]
+\centering
+\caption{Dual Prediction Performance}
+\begin{tabular}{lcc}
+\toprule
+\textbf{Lead Time} & \textbf{T RMS (°C)} & \textbf{Rate RMS (°C/h)} \\
+\midrule
+3.0 hours & 1.07 & 0.59 \\
+2.0 hours & 1.00 & 0.59 \\
+1.0 hours & 0.80 & 0.58 \\
+0.5 hours & 0.48 & 0.55 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The rate prediction is inherently noisier than temperature prediction because it involves differencing, but achieves useful accuracy (~0.6°C/h RMS).
+
+\subsection{Rate-Matching Algorithm}
+
+To achieve a target rate $R$ at temperature $T$ with a first-order system:
+
+\begin{equation}
+R = \frac{T_{\text{setpoint}} - T}{\tau} \implies T_{\text{setpoint}} = T + \tau \times R
+\end{equation}
+
+The rate-matching setpoint blends from temperature-only to rate-matching as sunset approaches:
+
+\begin{equation}
+T_{\text{setpoint}} = (1 - \alpha) \times T_{\text{sp,temp}} + \alpha \times T_{\text{sp,rate}}
+\end{equation}
+
+where $\alpha$ increases from 0 to 1 over the last 1.5 hours before sunset, and:
+\begin{align}
+T_{\text{sp,temp}} &= T_{\text{pred}} - 0.20 \times \sigma \\
+T_{\text{sp,rate}} &= T_{\text{pred}} + \tau \times \dot{T}_{\text{pred}} - 0.20 \times \sigma
+\end{align}
+
+\subsection{Results with Real RF Predictions}
+
+\begin{table}[h]
+\centering
+\caption{Temperature-Only vs Rate-Matching Control}
+\begin{tabular}{lccc}
+\toprule
+\textbf{Metric} & \textbf{Temp-Only} & \textbf{Rate-Match} & \textbf{Change} \\
+\midrule
+\multicolumn{4}{l}{\textit{At Sunset:}} \\
+\quad Temperature RMS & 0.80°C & 0.69°C & $-13\%$ \\
+\quad Rate RMS & 0.87°C/h & 0.34°C/h & $-61\%$ \\
+\quad \% Warm & 65\% & 40\% & Improved \\
+\midrule
+\multicolumn{4}{l}{\textit{Overnight:}} \\
+\quad Temperature RMS & 0.53°C & 0.30°C & $-44\%$ \\
+\quad Rate RMS & 0.26°C/h & 0.14°C/h & $-45\%$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[h]
+\centering
+\includegraphics[width=\textwidth]{fig42_rate_matching_real_predictions.png}
+\caption{Rate-matching control comparison using real RF predictions. (A) Temperature tracking example. (B) Rate of change comparison. (C--D) Error distributions at sunset. (E) Performance summary showing rate-matching improves all metrics.}
+\label{fig:ratematching}
+\end{figure}
+
+\subsection{Key Finding}
+
+Rate-matching control improves \textbf{all} performance metrics:
+\begin{itemize}
+    \item Temperature error at sunset: 13\% reduction
+    \item Rate error at sunset: 61\% reduction
+    \item Overnight tracking: 44\% reduction
+    \item Distribution shifted toward preferred cold side
+\end{itemize}
+
+The overnight improvement is particularly significant---by matching the cooling rate, the mirror tracks ambient much more closely throughout the night.
+
+\subsection{Updated Operational Recommendation}
+
+For optimal performance, implement rate-matching control:
+
+\textbf{Pre-sunset} (blending over last 1.5 hours):
+\begin{equation}
+T_{\text{sp}} = T_{\text{pred}} + \alpha \cdot \tau \cdot \dot{T}_{\text{pred}} - 0.20 \times \sigma
+\end{equation}
+
+\textbf{Overnight}:
+\begin{equation}
+T_{\text{sp}} = T_{\text{ambient}} + \tau \cdot \frac{dT_{\text{ambient}}}{dt} - 0.10\text{°C}
+\end{equation}
+
+This requires:
+\begin{enumerate}
+    \item Training an RF model to predict sunset rate of change
+    \item Measuring or estimating ambient rate of change overnight
+    \item Implementing the blended setpoint calculation
+\end{enumerate}
+
+\subsection{Future Improvements}
+
+Performance gains require improved prediction accuracy, not control sophistication. Potential approaches:
+
+\begin{itemize}
+    \item Ensemble predictions combining multiple models
+    \item Real-time atmospheric monitoring (more frequent updates)
+    \item Site-specific calibration of the uncertainty model
+\end{itemize}
+
+\appendix
+
+%==============================================================================
+\section{Derivation of Thermal Response}
+%==============================================================================
+
+For a first-order system with time constant $\tau$ and step input:
+
+\begin{equation}
+T(t) = T_{\text{setpoint}} + (T_0 - T_{\text{setpoint}}) e^{-t/\tau}
+\end{equation}
+
+The time to reach fraction $f$ of the step is:
+
+\begin{equation}
+t_f = -\tau \ln(1-f)
+\end{equation}
+
+For $\tau = 2$ hours:
+\begin{itemize}
+    \item 63\% response: 2.0 hours
+    \item 86\% response: 4.0 hours
+    \item 95\% response: 6.0 hours
+    \item 99\% response: 9.2 hours
+\end{itemize}
+
+%==============================================================================
+\section{Simulation Code}
+%==============================================================================
+
+The complete simulation code is available in \texttt{thermal\_control\_simulator.py}. Key functions:
+
+\begin{itemize}
+    \item \texttt{ThermalModel}: First-order thermal dynamics
+    \item \texttt{PredictionSimulator}: Realistic prediction noise generation
+    \item \texttt{SimpleColdBiasController}: Recommended control algorithm
+    \item \texttt{ThermalControlSimulator}: Backtesting framework
+\end{itemize}
+
+\end{document}

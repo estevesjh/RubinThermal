@@ -1,0 +1,468 @@
+\documentclass[11pt,letterpaper]{article}
+\usepackage[margin=1in]{geometry}
+\pdfminorversion=6
+\pdfobjcompresslevel=0
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{enumitem}
+
+\title{Sunset Temperature Prediction at Rubin Observatory\\
+\large Machine Learning Approaches for 3-Hour Forecasting}
+\author{Analysis Report}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+We present a comprehensive analysis of algorithms for predicting exterior temperature at sunset at the Vera C.\ Rubin Observatory on Cerro Pach\'on, Chile. Using approximately two years of 15-minute interval temperature data (October 2023--December 2025), we developed and evaluated multiple prediction approaches including traditional methods and machine learning models. Models were \textbf{trained on odd calendar days} and \textbf{tested on even calendar days} to ensure rigorous out-of-sample evaluation. Our best model (Random Forest with 3-day lookback) achieves an \textbf{RMS error of 1.01$^\circ$C} at 3 hours before sunset with \textbf{bias of only $-$0.04$^\circ$C}, representing a 61\% improvement over the persistence baseline.
+\end{abstract}
+
+\section{Introduction}
+
+Accurate prediction of sunset temperature is critical for telescope operations, particularly for thermal equilibration of optical components. This report documents our development of a prediction system with the following objectives:
+\begin{itemize}[noitemsep]
+    \item \textbf{Primary metric}: Minimize RMS error at 3 hours before sunset
+    \item \textbf{Secondary goal}: Minimize systematic bias
+    \item \textbf{Validation strategy}: Train on odd calendar days, test on even calendar days
+\end{itemize}
+
+\subsection{Data Overview}
+\begin{itemize}[noitemsep]
+    \item \textbf{Location}: Cerro Pach\'on, Chile (30$^\circ$14'40'' S, 70$^\circ$44'58'' W)
+    \item \textbf{Time period}: October 2023 -- December 2025
+    \item \textbf{Total valid days}: 771 days
+    \item \textbf{Temporal resolution}: 15-minute intervals
+    \item \textbf{Timestamps}: UTC (determined from diurnal cycle analysis)
+\end{itemize}
+
+\subsection{Train/Test Split Strategy}
+
+To ensure rigorous out-of-sample evaluation, we split the data by calendar day number:
+\begin{itemize}[noitemsep]
+    \item \textbf{Training set (odd days)}: 394 days (days 1, 3, 5, 7, ... of each month)
+    \item \textbf{Testing set (even days)}: 377 days (days 2, 4, 6, 8, ... of each month)
+\end{itemize}
+
+This interleaved split ensures that training and testing data span the same time periods and seasonal conditions, eliminating temporal bias while maintaining strict separation. Figure~\ref{fig:split} illustrates the data distribution.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig1_data_split.jpg}
+\caption{\textbf{Left}: Visualization of odd/even day split across the dataset. \textbf{Right}: Sunset temperature distributions for training (odd days, blue) and testing (even days, orange) sets, showing similar statistical properties.}
+\label{fig:split}
+\end{figure}
+
+\section{Development History}
+
+\subsection{Phase 1: Baseline Models}
+Initial implementation included:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Persistence}: Current temperature as prediction (RMS = 2.57$^\circ$C at 3h)
+    \item \textbf{Historical Mean}: Seasonal average ($\pm$15 day window) (RMS = 3.60$^\circ$C)
+    \item \textbf{Linear Extrapolation}: 2-3 hour trend projection (RMS = 2.74--3.01$^\circ$C)
+    \item \textbf{Fourier Decomposition}: 24h, 12h, 6h, 3h harmonics with polynomial baseline
+\end{enumerate}
+
+\textit{Finding}: Fourier methods underperformed persistence due to non-sinusoidal temperature evolution near sunset.
+
+\subsection{Phase 2: Machine Learning Models}
+Implemented ensemble and neural network approaches:
+\begin{itemize}[noitemsep]
+    \item Random Forest, Gradient Boosting, XGBoost, HistGradientBoosting
+    \item Support Vector Regression (RBF kernel)
+    \item Multi-layer Perceptron (MLP)
+    \item Ridge regression
+\end{itemize}
+
+\textbf{Features}: Current and lookback temperatures (0.5--4h), temperature trends, daily statistics (max, min, range), and seasonal encoding (sin/cos of day-of-year).
+
+\textbf{Result}: Random Forest achieved \textbf{1.08$^\circ$C RMS}---a 58\% improvement over persistence.
+
+\subsection{Phase 3: Delta Prediction and Bias Correction}
+Key improvements:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Delta prediction}: Predict temperature \textit{change} from current to sunset, rather than absolute temperature
+    \item \textbf{Calibration-based bias correction}: Use held-out calibration set (15\% of training data) to measure and subtract systematic bias
+\end{enumerate}
+
+\subsection{Phase 4: Lookback Optimization}
+Investigated optimal historical data window. \textbf{Finding}: 3 days (72 hours) of lookback is optimal, as integral day boundaries correctly capture diurnal temperature cycles.
+
+Final feature set includes: previous days' mean temperatures, temperature ranges, and sunset temperatures.
+
+\section{Results}
+
+\subsection{Performance Overview}
+
+Figure~\ref{fig:rms_heatmap} shows RMS prediction error across all models and lead times.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.9\textwidth]{jpg_figs/fig2_rms_heatmap.jpg}
+\caption{RMS prediction error (°C) by model and lead time. Green indicates lower error. Random Forest and Ensemble models achieve the best performance, with RMS $\approx$ 1.0°C at 3 hours.}
+\label{fig:rms_heatmap}
+\end{figure}
+
+\subsection{Multiple Error Metrics}
+
+Figure~\ref{fig:median_mae} presents median and mean absolute error heatmaps.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig3_median_mae_heatmaps.jpg}
+\caption{\textbf{Left}: Median absolute error. \textbf{Right}: Mean absolute error. The median is consistently lower than the mean, indicating a right-skewed error distribution with occasional large outliers.}
+\label{fig:median_mae}
+\end{figure}
+
+\subsection{Error Distributions}
+
+Figure~\ref{fig:histograms} shows prediction error histograms at 3 hours lead time.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig4_error_histograms.jpg}
+\caption{Error distribution histograms at 3-hour lead time for all models tested on even days. Red vertical line indicates zero error; green dashed line shows mean bias. Random Forest shows the tightest distribution with minimal bias ($-$0.04°C).}
+\label{fig:histograms}
+\end{figure}
+
+\subsection{Cumulative Distribution Functions}
+
+Figure~\ref{fig:cdfs} presents cumulative probability distributions of absolute errors.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig5_cdfs.jpg}
+\caption{\textbf{Left}: CDF for Random Forest at different lead times, showing 70\% of 3-hour predictions have error $<$1°C. \textbf{Right}: CDF comparison across all models at 3 hours.}
+\label{fig:cdfs}
+\end{figure}
+
+\subsection{RMS vs Lead Time}
+
+Figure~\ref{fig:rms_leadtime} shows how prediction error grows with lead time.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.85\textwidth]{jpg_figs/fig6_rms_vs_leadtime.jpg}
+\caption{RMS error vs lead time for all models. Error grows approximately linearly at $\sim$0.15°C per hour. At 3 hours, best models achieve RMS $\approx$ 1.0°C.}
+\label{fig:rms_leadtime}
+\end{figure}
+
+\subsection{Summary Table}
+
+Table~\ref{tab:results} presents final performance metrics at 3 hours before sunset.
+
+\begin{table}[H]
+\centering
+\caption{Model Performance at 3-Hour Lead Time (Tested on Even Days)}
+\label{tab:results}
+\begin{tabular}{lccccc}
+\toprule
+\textbf{Model} & \textbf{RMS (°C)} & \textbf{MAE (°C)} & \textbf{Median (°C)} & \textbf{Bias (°C)} & \textbf{\% $<$ 1°C} \\
+\midrule
+\textbf{Random Forest} & \textbf{1.009} & 0.791 & 0.643 & $-$0.039 & 69.8 \\
+Ensemble & 1.025 & 0.799 & 0.669 & $-$0.043 & 68.4 \\
+HistGradientBoosting & 1.025 & 0.799 & 0.669 & $-$0.043 & 68.4 \\
+GradientBoosting & 1.037 & 0.821 & 0.707 & $-$0.072 & 68.4 \\
+XGBoost & 1.050 & 0.820 & 0.662 & $-$0.034 & 67.9 \\
+Ridge & 1.117 & 0.882 & 0.761 & $-$0.176 & 64.7 \\
+MLP & 1.254 & 0.982 & 0.814 & $+$0.069 & 58.4 \\
+\midrule
+Persistence (baseline) & 2.571 & 2.307 & --- & $-$2.244 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Error Analysis}
+
+\subsection{Temporal Evolution}
+
+Figure~\ref{fig:time_evolution} shows how prediction errors evolve over the two-year dataset.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig7_error_time_evolution.jpg}
+\caption{Temporal evolution of prediction errors. \textbf{Top left}: Individual errors over time with 30-day rolling mean. \textbf{Top right}: 30-day rolling RMS showing stable performance. \textbf{Bottom left}: Absolute errors over time. \textbf{Bottom right}: Monthly RMS (red=summer, green=winter, blue=transition seasons).}
+\label{fig:time_evolution}
+\end{figure}
+
+\subsection{Seasonal Effects}
+
+Figure~\ref{fig:seasonal} analyzes performance differences across seasons.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig8_seasonal_effects.jpg}
+\caption{Seasonal analysis. \textbf{Top left}: Error distribution by season. \textbf{Top right}: RMS and MAE by season. \textbf{Bottom left}: Bias by season---Fall shows largest negative bias ($-$0.29°C), Spring shows positive bias (+0.16°C). \textbf{Bottom right}: Error vs day of year with 15-day binned RMS.}
+\label{fig:seasonal}
+\end{figure}
+
+Table~\ref{tab:seasonal} summarizes seasonal performance metrics.
+
+\begin{table}[H]
+\centering
+\caption{Seasonal Performance Summary}
+\label{tab:seasonal}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Season} & \textbf{RMS (°C)} & \textbf{MAE (°C)} & \textbf{Bias (°C)} & \textbf{N days} \\
+\midrule
+Summer (Dec--Feb) & 1.024 & 0.788 & $-$0.092 & 88 \\
+Fall (Mar--May) & 1.026 & 0.810 & $-$0.293 & 90 \\
+Winter (Jun--Aug) & 1.000 & 0.782 & $+$0.024 & 90 \\
+Spring (Sep--Nov) & 0.988 & 0.786 & $+$0.162 & 109 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key observation}: Seasonal bias varies from $-$0.29°C (Fall) to $+$0.16°C (Spring). This suggests that season-specific bias correction could further improve performance.
+
+\subsection{Dependence on Temperature Trends}
+
+Figure~\ref{fig:trends} examines whether errors depend on multi-day temperature trends.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig9_trend_dependence.jpg}
+\caption{Error dependence on temperature trends. \textbf{Top left}: Error vs 3-day trend. \textbf{Top right}: Error vs 7-day trend. \textbf{Bottom left}: RMS by trend category---stable conditions ($\pm$0.1°C/day) show lowest RMS (0.93°C). \textbf{Bottom right}: Error vs daily temperature range.}
+\label{fig:trends}
+\end{figure}
+
+\textbf{Key findings}:
+\begin{itemize}[noitemsep]
+    \item Correlations between temperature trends and errors are weak ($r < 0.1$)
+    \item \textbf{Stable days} (trend $\pm$0.1°C/day) show lowest RMS: 0.93°C
+    \item \textbf{Strong cooling} days ($<-$0.5°C/day) show highest RMS: 1.09°C
+    \item Days with larger diurnal temperature range show slightly higher errors ($r = 0.10$)
+\end{itemize}
+
+\section{Experimental: LLM-Style Embedding Approach}
+
+As an experimental investigation, we explored whether treating temperature data as ``language'' could provide predictive power. This section describes an approach inspired by Large Language Models (LLMs), where we represent temperatures as ASCII text strings and process them using sequence models with learned embeddings.
+
+\subsection{Motivation}
+
+Modern language models like GPT achieve remarkable performance by:
+\begin{enumerate}[noitemsep]
+    \item Tokenizing text into discrete vocabulary elements
+    \item Learning dense vector embeddings for each token
+    \item Processing sequences with attention-based architectures
+    \item Capturing long-range dependencies in sequential data
+\end{enumerate}
+
+We asked: \textit{Can we apply similar techniques to temperature time series?} Instead of predicting ``the next word,'' we use the sequence representation to predict a continuous temperature value.
+
+\subsection{Step 1: Tokenization---Temperatures as ASCII Words}
+
+The first step converts continuous temperature values into discrete ``words'' using ASCII string representation.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig12_tokenization.jpg}
+\caption{The tokenization process. \textbf{(A)} Raw temperature time series at 15-minute intervals. \textbf{(B)} Quantization to 0.5°C precision reduces vocabulary size while preserving information. \textbf{(C)} Conversion to ASCII strings with explicit sign (e.g., $-5.23$°C $\rightarrow$ ``-5.0'', $+12.78$°C $\rightarrow$ ``+13.0''). \textbf{(D)} Vocabulary distribution showing 68 unique temperature ``words'' in our dataset.}
+\label{fig:tokenization}
+\end{figure}
+
+The tokenization procedure:
+\begin{enumerate}[noitemsep]
+    \item \textbf{Quantize}: Round temperature to nearest 0.5°C
+    \item \textbf{Format}: Convert to signed ASCII string: \texttt{f"\{temp:+.1f\}"}
+    \item \textbf{Result}: Vocabulary of 68 unique ``words'' from ``-9.0'' to ``+23.5''
+\end{enumerate}
+
+This is analogous to how text tokenizers convert words to discrete token IDs, except our ``words'' are temperature strings like ``+12.5'' or ``-3.0''.
+
+\subsection{Step 2: Sentence Construction from 3-Day Windows}
+
+Each prediction instance becomes a ``sentence'' composed of all temperature readings from the past 3 days plus the current day up to the prediction time (3 hours before sunset).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig13_sentence_construction.jpg}
+\caption{Construction of temperature ``sentences.'' \textbf{Top}: Three days of historical temperature data plus today's data up to $T-3$h forms the input window. The gold star marks the target sunset temperature we want to predict. \textbf{Bottom}: The resulting ``sentence'' of approximately 371 temperature words that serves as input to the model.}
+\label{fig:sentence}
+\end{figure}
+
+A typical sentence contains $\sim$371 words (approximately 93 readings per day $\times$ 4 days). For example:
+\begin{center}
+\texttt{[``+8.0'', ``+8.5'', ``+9.0'', ``+9.5'', ..., ``+11.5'', ``+12.0'']}
+\end{center}
+
+This is directly analogous to feeding a sentence of 371 words to a language model.
+
+\subsection{Step 3: Model Architecture}
+
+\textbf{Key Insight}: Unlike GPT which predicts the probability distribution over the next word, we use the sequence encoding to predict a \textit{continuous} temperature value. This is a regression task, not a classification task.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig14_model_architecture.jpg}
+\caption{Model architecture for the ASCII word embedding approach. Temperature ``words'' are embedded into 64-dimensional vectors, processed by a bidirectional LSTM with attention, concatenated with the current temperature, and passed through fully-connected layers to predict the temperature change $\Delta T$. The final prediction is $T_\text{sunset} = T_\text{current} + \Delta T$.}
+\label{fig:architecture}
+\end{figure}
+
+We implemented two architectures:
+
+\textbf{1. Bidirectional LSTM with Attention:}
+\begin{itemize}[noitemsep]
+    \item Word embedding layer: 68 words $\rightarrow$ 64-dimensional vectors
+    \item 2-layer bidirectional LSTM (128 hidden units)
+    \item Attention mechanism to weight important time steps
+    \item Concatenate context vector with current temperature
+    \item Fully-connected layers: 257 $\rightarrow$ 64 $\rightarrow$ 32 $\rightarrow$ 1
+\end{itemize}
+
+\textbf{2. Transformer Encoder:}
+\begin{itemize}[noitemsep]
+    \item Word + positional embeddings (64-dimensional)
+    \item 3-layer Transformer encoder (4 attention heads)
+    \item Mean pooling over sequence
+    \item Same regression head as LSTM
+\end{itemize}
+
+\subsection{Step 4: The Prediction Mechanism}
+
+Figure~\ref{fig:prediction_mechanism} clarifies how prediction works in our approach versus traditional language models.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig16_prediction_mechanism.jpg}
+\caption{The prediction mechanism explained. \textbf{(A)} Comparison with traditional LLMs: we predict a continuous temperature change, not a probability over vocabulary. \textbf{(B)} The model sees 3 days of history up to the prediction time (blue shaded region) and must predict the sunset temperature (gold star). \textbf{(C)} Delta prediction: the model predicts the temperature \textit{change} from current to sunset, then adds it to the current temperature. \textbf{(D)} Rationale for delta prediction.}
+\label{fig:prediction_mechanism}
+\end{figure}
+
+The model predicts $\Delta T = T_\text{sunset} - T_\text{current}$, then computes:
+\begin{equation}
+\hat{T}_\text{sunset} = T_\text{current} + \Delta T_\text{predicted}
+\end{equation}
+
+This delta prediction strategy:
+\begin{itemize}[noitemsep]
+    \item Reduces target range: $\Delta T \in [-8, +4]$°C vs $T \in [-9, +24]$°C
+    \item Simplifies the learning task: ``how much will temperature change?''
+    \item Incorporates the current temperature, our most predictive feature
+    \item Matches the approach used by our successful Random Forest model
+\end{itemize}
+
+\subsection{Step 5: Learned Embeddings}
+
+The model learns 64-dimensional embeddings for each temperature ``word.'' Figure~\ref{fig:embeddings} visualizes these learned representations.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig15_embedding_space.jpg}
+\caption{Analysis of learned temperature word embeddings. \textbf{(A)} PCA projection of the 64-dimensional embeddings shows that similar temperatures cluster together---the model has learned that ``+10.0'' and ``+10.5'' should have similar representations. \textbf{(B)} Cosine similarity matrix confirms that nearby temperatures have higher similarity (red diagonal band) while distant temperatures have lower similarity.}
+\label{fig:embeddings}
+\end{figure}
+
+The embedding analysis reveals:
+\begin{itemize}[noitemsep]
+    \item Adjacent temperature words ($\Delta = 0.5$°C) have positive similarity
+    \item Distant temperature words ($\Delta = 5$°C) have near-zero or negative similarity
+    \item The model correctly learns the ordinal structure of temperatures
+\end{itemize}
+
+This is analogous to how word embeddings in NLP learn that ``king'' and ``queen'' are more similar than ``king'' and ``banana.''
+
+\subsection{Results: LLM Approach Performance}
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{jpg_figs/fig17_results_comparison.jpg}
+\caption{Performance comparison of the LLM-style embedding approach. \textbf{(A)} RMS error comparison shows the ASCII word models achieve $\sim$1.3--1.4°C RMS, outperforming persistence but underperforming Random Forest. \textbf{(B)} Improvement over persistence baseline: LSTM achieves 49\%, Transformer achieves 45\%, while Random Forest achieves 61\%.}
+\label{fig:llm_results}
+\end{figure}
+
+\begin{table}[H]
+\centering
+\caption{LLM-Style Embedding Approach Results (3-Hour Lead Time)}
+\label{tab:llm_results}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Model} & \textbf{RMS (°C)} & \textbf{MAE (°C)} & \textbf{Bias (°C)} & \textbf{vs Persistence} \\
+\midrule
+Persistence (baseline) & 2.57 & 2.31 & $+$2.24 & --- \\
+ASCII Word Transformer & 1.41 & 1.13 & $+$0.10 & $+$45\% \\
+ASCII Word LSTM+Attention & 1.31 & 1.02 & $+$0.35 & $+$49\% \\
+\midrule
+\textbf{Random Forest} & \textbf{1.01} & \textbf{0.79} & $-$0.04 & $+$61\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Discussion: Why Random Forest Still Wins}
+
+The LLM-style approach achieves meaningful improvements over persistence (45--49\%), demonstrating that the ``temperature as language'' representation can capture predictive patterns. However, Random Forest maintains a significant advantage (61\% improvement).
+
+\textbf{Reasons for Random Forest's superiority:}
+\begin{enumerate}[noitemsep]
+    \item \textbf{Tabular data structure}: Tree-based methods excel at tabular regression with numerical features. The temperature prediction task is fundamentally a structured regression problem, not a sequence-to-sequence task.
+
+    \item \textbf{Feature engineering}: Random Forest benefits from hand-crafted features (temperature trends, daily statistics, lookback temperatures) that directly encode domain knowledge.
+
+    \item \textbf{Limited training data}: With only 335 training sentences, the neural models cannot fully leverage their capacity. Language models typically require millions of examples.
+
+    \item \textbf{Information loss in tokenization}: Quantizing to 0.5°C bins discards fine-grained temperature information that tree models can utilize.
+\end{enumerate}
+
+\textbf{When might LLM approaches excel?}
+\begin{itemize}[noitemsep]
+    \item With significantly more training data (years to decades)
+    \item When incorporating heterogeneous data (text weather reports, satellite imagery)
+    \item For multi-site prediction where transfer learning could help
+    \item With pre-trained foundation models for time series
+\end{itemize}
+
+\subsection{Conclusion: LLM Experiment}
+
+Treating temperatures as ASCII ``words'' and using language model architectures is a creative approach that \textit{does work}---achieving 49\% improvement over persistence. The models correctly learn that similar temperatures should have similar embeddings. However, for this specific task with limited data and clear numerical structure, traditional tree-based methods remain superior. This experiment demonstrates both the flexibility of modern deep learning and the continued importance of matching model architecture to problem structure.
+
+\section{Key Findings}
+
+\begin{enumerate}
+    \item \textbf{61\% improvement over baseline}: Best ML model achieves 1.01°C RMS vs 2.57°C for persistence.
+
+    \item \textbf{Near-zero bias}: Calibration-based correction reduces systematic bias to $<$0.05°C.
+
+    \item \textbf{70\% of predictions within 1°C}: At 3 hours, most predictions are highly accurate.
+
+    \item \textbf{Median error of 0.64°C}: Half of all predictions are within 0.64°C of actual.
+
+    \item \textbf{72-hour lookback optimal}: Three days of historical data captures diurnal patterns without adding noise.
+
+    \item \textbf{Tree-based models dominate}: Random Forest and gradient boosting variants outperform neural networks and linear models.
+\end{enumerate}
+
+\section{Recommendations}
+
+\subsection{For Operational Deployment}
+\begin{enumerate}[noitemsep]
+    \item Use \textbf{Random Forest} with 3-day lookback features
+    \item Implement \textbf{rolling bias correction} using recent prediction errors
+    \item Retrain monthly to incorporate new data
+    \item Monitor for anomalous days (frontal passages, unusual weather)
+\end{enumerate}
+
+\subsection{Potential Future Improvements}
+\begin{enumerate}[noitemsep]
+    \item Incorporate additional meteorological data (cloud cover, pressure, humidity)
+    \item Implement uncertainty quantification via quantile regression
+    \item Develop weather-regime-specific models
+\end{enumerate}
+
+\section{Conclusion}
+
+We developed a sunset temperature prediction system achieving \textbf{1.01°C RMS error} at 3 hours before sunset with \textbf{bias of only $-$0.04°C}. Using odd calendar days for training and even days for testing ensures rigorous validation. The system achieves a 61\% improvement over the persistence baseline and is ready for operational deployment at the Rubin Observatory.
+
+\vspace{1em}
+\hrule
+\vspace{0.5em}
+\small
+\textit{Report generated January 2026. Code available in project repository.}
+
+\end{document}

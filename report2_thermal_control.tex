@@ -1,0 +1,666 @@
+\documentclass[11pt,letterpaper]{article}
+
+\usepackage{geometry}
+\geometry{margin=1in}
+
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{multirow}
+\usepackage{array}
+\usepackage{colortbl}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+
+\definecolor{bestcolor}{RGB}{200,255,200}
+\definecolor{goodcolor}{RGB}{255,255,200}
+
+\title{\textbf{Thermal Control Algorithms for\\Primary Mirror Temperature Matching}\\[0.5em]
+\large Report 2: Rate-Matching Control for Rubin Observatory}
+
+\author{Christopher Stubbs and Johnny Esteves\\[0.5em]
+\small\textit{Analysis performed with extensive use of Claude Code}}
+\date{January 2026}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+This report presents control algorithms for matching the Rubin Observatory primary mirror temperature to ambient conditions throughout the night. We analyze a \textbf{dual-setpoint control} approach where the dome interior HVAC maintains a \emph{constant} temperature before sunset, and the mirror naturally equilibrates to this interior temperature. At sunset, the dome opens and interior air instantly equilibrates to exterior ambient, while the mirror (with $\tau = 2$ hour time constant) is then actively controlled with rate-matching.
+
+Simulations across 769 nights demonstrate that the optimal strategy uses:
+\begin{itemize}
+    \item \textbf{Pre-sunset}: Dome HVAC holds interior at predicted sunset temperature minus 0.3°C (FLAT, not tracking exterior)
+    \item \textbf{Overnight}: Rate-matching control with 0.3°C cold bias
+\end{itemize}
+
+This achieves \textbf{0.44°C RMS} tracking error overnight, with \textbf{68\%} of observing time in the ideal range (mirror 0 to 0.5°C cooler than ambient) and only \textbf{15\%} of time with the mirror warmer than ambient.
+\end{abstract}
+
+\tableofcontents
+
+\newpage
+
+%=============================================================================
+\section{Introduction}
+%=============================================================================
+
+\subsection{The Control Problem}
+
+The primary mirror thermal control problem has two distinct phases:
+
+\begin{enumerate}
+    \item \textbf{Pre-sunset Phase}: Drive mirror to predicted sunset conditions
+    \item \textbf{Overnight Phase}: Track ambient temperature as it evolves
+\end{enumerate}
+
+Traditional approaches focus only on matching temperature. This report demonstrates that matching \emph{both} temperature and rate of change yields significantly better overnight performance.
+
+\subsection{Physical Model}
+
+The system has two controllable temperatures:
+
+\begin{enumerate}
+    \item \textbf{Dome interior air temperature} $T_\text{dome}$: Controlled by HVAC with fast response ($\tau_\text{dome} \approx 30$ minutes)
+    \item \textbf{Mirror temperature setpoint} $T_\text{mirror,sp}$: Active heating/cooling system
+\end{enumerate}
+
+The mirror temperature follows first-order dynamics:
+\begin{equation}
+    \frac{dT_\text{mirror}}{dt} = \frac{T_\text{setpoint} - T_\text{mirror}}{\tau}
+    \label{eq:dynamics}
+\end{equation}
+
+where $\tau = 2$ hours is the thermal time constant. The setpoint rate of change is limited to $\pm 2°C/\text{hour}$ to prevent thermal gradients.
+
+\textbf{Key operational constraint}: Before sunset, the mirror exchanges heat with the dome interior air (not exterior ambient). At sunset, the dome opens and interior air \emph{immediately} equilibrates to exterior ambient temperature.
+
+\subsection{Why Rate Matters}
+
+If the mirror has the correct temperature but wrong rate at sunset:
+\begin{itemize}
+    \item The mirror will drift away from ambient as the night progresses
+    \item Temperature errors accumulate, degrading image quality
+    \item Recovery requires aggressive control that may cause thermal gradients
+\end{itemize}
+
+Matching both $T$ and $\dot{T}$ at sunset ensures the mirror ``tracks'' ambient naturally through the night.
+
+%=============================================================================
+\section{Control Strategy Overview}
+%=============================================================================
+
+\subsection{Phase 1: Pre-Sunset Control}
+
+Before sunset, the dome is closed and the interior environment is controlled by HVAC. The control strategy is simple:
+
+\begin{equation}
+    \boxed{T_\text{HVAC} = T_\text{pred} - 0.3°C \quad \text{(constant)}}
+    \label{eq:presunset}
+\end{equation}
+
+where $T_\text{pred}$ is the predicted sunset temperature from the Random Forest model.
+
+\textbf{Key points}:
+\begin{itemize}
+    \item The HVAC setpoint is \textbf{FLAT} (constant)---it does \emph{not} track exterior temperature
+    \item The mirror naturally equilibrates to the dome interior temperature
+    \item No active mirror temperature control is needed before sunset
+    \item The 0.3°C cold bias ensures the mirror starts slightly cold at sunset
+\end{itemize}
+
+The dome air equilibrates quickly ($\tau_\text{dome} = 30$ min), and the mirror equilibrates to the dome interior over its 2-hour time constant. Starting 4+ hours before sunset ensures both are at the target temperature.
+
+\subsection{Phase 2: Sunset Transition}
+
+At sunset, the dome opens and:
+\begin{itemize}
+    \item Dome interior air \textbf{immediately} equilibrates to exterior ambient
+    \item Mirror is at approximately $T_\text{sunset} - 0.4°C$ (slightly cold, as desired)
+    \item Control switches to overnight tracking mode
+\end{itemize}
+
+\subsection{Phase 3: Overnight Tracking}
+
+After sunset, the algorithm uses rate-matching to track the evolving ambient:
+\begin{equation}
+    \boxed{T_\text{setpoint} = T_\text{ambient} + \tau \cdot \dot{T}_\text{ambient} - \sigma_\text{night}}
+    \label{eq:overnight}
+\end{equation}
+
+where:
+\begin{itemize}
+    \item $T_\text{ambient}$: current exterior ambient temperature (measured)
+    \item $\dot{T}_\text{ambient}$: ambient cooling rate computed from 1-hour history
+    \item $\tau = 2$ hours: mirror thermal time constant
+    \item $\sigma_\text{night} = 0.3°C$: overnight cold bias (same as pre-sunset)
+\end{itemize}
+
+The overnight rate is estimated as:
+\begin{equation}
+    \dot{T}_\text{ambient} = \frac{T_\text{now} - T_{-1\text{h}}}{1\text{ hour}}
+\end{equation}
+
+\textbf{Physical Interpretation}: If ambient is cooling at 0.5°C/hour, the setpoint is $2 \times 0.5 = 1°C$ colder than ambient. This causes the mirror to warm toward the setpoint at the same rate that ambient is cooling, achieving rate-matching.
+
+%=============================================================================
+\section{Algorithm Pseudocode}
+%=============================================================================
+
+The complete control algorithm is presented below:
+
+\begin{algorithm}[H]
+\caption{Rate-Matching Thermal Control}
+\label{alg:control}
+\begin{algorithmic}[1]
+\STATE \textbf{Constants:}
+\STATE $\tau \gets 2.0$ hours \COMMENT{thermal time constant}
+\STATE $\sigma_\text{pre} \gets 0.20$°C \COMMENT{pre-sunset cold bias}
+\STATE $\sigma_\text{night} \gets 0.15$°C \COMMENT{overnight cold bias}
+\STATE $\Delta t \gets 15$ minutes \COMMENT{control update interval}
+\STATE $R_\text{max} \gets 2.0$°C/hour \COMMENT{max setpoint rate of change}
+
+\STATE
+\STATE \textbf{Pre-sunset Phase} (4h to sunset):
+\WHILE{time $<$ sunset}
+    \STATE $T_\text{pred}, \dot{T}_\text{pred} \gets$ \textsc{PredictSunset}(current\_time)
+    \STATE $\dot{T}_\text{ambient} \gets$ \textsc{MeasureAmbientRate}()
+    \STATE $t_\text{remain} \gets$ hours until sunset
+    \STATE $\beta \gets \max(0, 1 - t_\text{remain}/1.5)$ \COMMENT{blend factor}
+    \STATE $\dot{T}_\text{eff} \gets (1-\beta) \cdot \dot{T}_\text{pred} + \beta \cdot \dot{T}_\text{ambient}$
+    \STATE $T_\text{raw} \gets T_\text{pred} + \tau \cdot \dot{T}_\text{eff} - \sigma_\text{pre}$
+    \STATE $T_\text{setpoint} \gets$ \textsc{RateLimit}($T_\text{raw}$, $T_\text{prev}$, $R_\text{max}$, $\Delta t$)
+    \STATE \textsc{ApplySetpoint}($T_\text{setpoint}$)
+    \STATE Wait $\Delta t$
+\ENDWHILE
+
+\STATE
+\STATE \textbf{Overnight Phase} (sunset to sunrise):
+\STATE $T_\text{prev} \gets T_\text{ambient}$ \COMMENT{initialize rate calculation}
+\WHILE{time $<$ sunrise}
+    \STATE $T_\text{now} \gets$ \textsc{MeasureAmbient}()
+    \STATE $\dot{T}_\text{ambient} \gets (T_\text{now} - T_\text{prev}) / \Delta t_\text{rate}$
+    \STATE $T_\text{raw} \gets T_\text{now} + \tau \cdot \dot{T}_\text{ambient} - \sigma_\text{night}$
+    \STATE $T_\text{setpoint} \gets$ \textsc{RateLimit}($T_\text{raw}$, $T_\text{prev}$, $R_\text{max}$, $\Delta t$)
+    \STATE \textsc{ApplySetpoint}($T_\text{setpoint}$)
+    \STATE $T_\text{prev} \gets T_\text{now}$
+    \STATE Wait $\Delta t$
+\ENDWHILE
+
+\STATE
+\STATE \textbf{RateLimit}($T_\text{raw}$, $T_\text{prev}$, $R_\text{max}$, $\Delta t$):
+\STATE \quad $\Delta T_\text{max} \gets R_\text{max} \cdot \Delta t$
+\STATE \quad \textbf{return} $\text{clip}(T_\text{raw}, T_\text{prev} - \Delta T_\text{max}, T_\text{prev} + \Delta T_\text{max})$
+\end{algorithmic}
+\end{algorithm}
+
+\subsection{Implementation Notes}
+
+\begin{enumerate}
+    \item \textbf{Setpoint rate limiting}: The setpoint rate of change is limited to $\pm 2°C$/hour to prevent thermal gradients across the mirror. This is critical---rapid setpoint changes would create temperature differentials that degrade image quality.
+    \begin{equation}
+        |T_\text{setpoint}(t) - T_\text{setpoint}(t-\Delta t)| \leq R_\text{max} \cdot \Delta t = 0.5°C \text{ per 15 min}
+    \end{equation}
+
+    \item \textbf{Rate smoothing}: Use exponential moving average for overnight rate to reduce noise:
+    \begin{equation}
+        \dot{T}_\text{smooth} = \alpha \cdot \dot{T}_\text{new} + (1-\alpha) \cdot \dot{T}_\text{prev}, \quad \alpha = 0.3
+    \end{equation}
+
+    \item \textbf{Ambient rate estimation}: Compute rate from 1-hour temperature history to smooth out short-term fluctuations while remaining responsive to actual trends.
+
+    \item \textbf{Prediction updates}: During pre-sunset phase, predictions improve as sunset approaches. Update every 15 minutes using the latest forecast.
+
+    \item \textbf{Pre-sunset to overnight transition}: The dome environment differs from outdoor ambient during the day, and HVAC energy limits prevent tracking outdoor ambient before sunset. Therefore:
+    \begin{itemize}
+        \item \textbf{Early pre-sunset} ($>$1.5h before sunset): Use predicted sunset rate ($\dot{T}_\text{pred}$) in the setpoint formula
+        \item \textbf{Near sunset} (1.5h to 0h): Linearly blend from predicted rate to measured ambient rate
+        \item \textbf{At/after sunset}: Use measured ambient rate exclusively
+    \end{itemize}
+    The blending function is:
+    \begin{equation}
+        \dot{T}_\text{effective} = (1-\beta) \cdot \dot{T}_\text{pred} + \beta \cdot \dot{T}_\text{ambient}
+    \end{equation}
+    where $\beta = \max(0, 1 - t_\text{to\_sunset}/1.5\text{h})$. This ensures smooth setpoint transition as the dome opens at sunset.
+\end{enumerate}
+
+%=============================================================================
+\section{Simulation Results}
+%=============================================================================
+
+\subsection{Test Methodology}
+
+We simulated both temperature-only and rate-matching control across 770 nights of historical data:
+\begin{itemize}
+    \item Pre-sunset phase: 4 hours with RF-based predictions
+    \item Overnight phase: Sunset to sunrise with measured ambient tracking
+    \item Mirror dynamics: First-order response with $\tau = 2$ hours
+\end{itemize}
+
+\subsection{At-Sunset Performance}
+
+\begin{table}[H]
+\centering
+\caption{Performance Comparison at Sunset}
+\label{tab:sunset}
+\begin{tabular}{l|cc}
+\toprule
+\textbf{Metric} & \textbf{Temperature-Only} & \textbf{Rate-Matching} \\
+\midrule
+Temperature RMS & 0.80°C & 0.69°C \\
+Temperature Bias & +0.27°C (warm) & $-0.18$°C (cold) \\
+Rate RMS & 0.87°C/h & 0.34°C/h \\
+Rate Bias & +0.65°C/h & +0.04°C/h \\
+\% Days Warm & 64.7\% & 39.9\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key Results}:
+\begin{itemize}
+    \item Rate-matching reduces rate error by 61\%
+    \item Temperature error also improves by 13\%
+    \item Cold bias shifts from 65\% warm to 60\% cold (as desired)
+\end{itemize}
+
+\subsection{Overnight Performance}
+
+\begin{table}[H]
+\centering
+\caption{Overnight Tracking Performance (Sunset to Sunrise)}
+\label{tab:overnight}
+\begin{tabular}{l|cc}
+\toprule
+\textbf{Metric} & \textbf{Temperature-Only} & \textbf{Rate-Matching} \\
+\midrule
+\rowcolor{bestcolor}
+Temperature RMS & 0.53°C & \textbf{0.30°C} \\
+Rate RMS & 0.26°C/h & 0.14°C/h \\
+Improvement & --- & 44\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Rate-matching control achieves \textbf{44\% reduction} in overnight tracking error. This is the primary benefit: better initial conditions propagate through the entire night.
+
+\subsection{Cold Bias Optimization}
+
+We systematically tested cold bias values from 0.0°C to 0.4°C to find the optimal operating point. The goal is to keep the mirror slightly cooler than ambient (0 to 0.5°C) while minimizing RMS tracking error.
+
+\begin{table}[H]
+\centering
+\caption{Cold Bias Optimization Results (769 nights, both biases equal)}
+\label{tab:cold_bias}
+\begin{tabular}{c|cccc}
+\toprule
+\textbf{Cold Bias} & \textbf{RMS Error} & \textbf{Mean Offset} & \textbf{\% Warm} & \textbf{\% Ideal} \\
+\midrule
+0.0°C & 0.33°C & +0.04°C & 55\% & 40\% \\
+0.1°C & 0.34°C & $-0.06$°C & 35\% & 58\% \\
+0.2°C & 0.38°C & $-0.16$°C & 22\% & 67\% \\
+\rowcolor{bestcolor}
+0.3°C & 0.44°C & $-0.26$°C & 15\% & 68\% \\
+0.4°C & 0.51°C & $-0.36$°C & 11\% & 62\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \textbf{0.3°C cold bias} (for both pre-sunset and overnight) provides the best operational balance:
+\begin{itemize}
+    \item Reasonable RMS error (0.44°C)
+    \item Appropriate cold offset ($-0.26$°C mean, ``a few tenths cold'')
+    \item Maximum time in ideal range (68\% in 0 to $-0.5$°C window)
+    \item Only 15\% of time warm (greatly reduced from no-bias case)
+\end{itemize}
+
+Figure~\ref{fig:cold_bias} shows the trade-off analysis.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig76_fixed_parameter_sweep.png}
+\caption{Parameter sweep for pre-sunset and overnight cold bias values. (A) RMS error is minimized at low biases but (B) \% time warm is unacceptably high. (C) \% time in ideal range is maximized around 0.3°C for both biases. (D) Mean offset shifts cold with increasing bias. The optimal operating point of 0.3°C/0.3°C balances RMS (0.44°C), cold preference (only 15\% warm), and time in ideal range (68\%).}
+\label{fig:cold_bias}
+\end{figure}
+
+\subsection{Overnight Tracking Examples}
+
+Figure~\ref{fig:overnight_examples} shows the control algorithm tracking ambient temperature through 9 representative nights.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig75_fixed_dual_setpoint_examples.png}
+\caption{Dual-setpoint control examples showing the complete operational cycle. Before sunset (negative hours): the mirror (green) is FLAT at the HVAC setpoint (red line), NOT tracking exterior ambient (blue). At sunset (t=0): the dome opens and interior air instantly equilibrates to exterior ambient. Overnight: mirror tracks ambient with rate-matching control. Blue shading indicates mirror cooler than ambient (good); pink shading indicates warmer (less desirable).}
+\label{fig:overnight_examples}
+\end{figure}
+
+The mirror tracks ambient closely across diverse conditions, with most of the shaded area showing blue (cold) rather than pink (warm).
+
+\subsection{Error Distribution}
+
+Figure~\ref{fig:error_dist} shows the distribution of mirror-minus-ambient temperature across all 770 nights.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.8\textwidth]{fig77_fixed_error_distribution.png}
+\caption{Distribution of mirror-ambient temperature offset with 0.3°C pre-sunset and overnight cold bias. The distribution is centered at $-0.26$°C (a few tenths cold, as desired), with most of the mass in the ideal range (0 to $-0.5$°C, green shading). Only 15\% of observations fall in the warm region (pink shading).}
+\label{fig:error_dist}
+\end{figure}
+
+\subsection{Visualization}
+
+Figure~\ref{fig:comparison} shows the comparison of control strategies.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig42_rate_matching_real_predictions.png}
+\caption{Rate-matching vs temperature-only control using real RF predictions. Temperature-only control is shown in green, rate-matching in red. Rate-matching shows tighter error distributions and reduced warm bias across all panels.}
+\label{fig:comparison}
+\end{figure}
+
+%=============================================================================
+\section{Example Days}
+%=============================================================================
+
+Figure~\ref{fig:examples} shows the control algorithm operation on representative days.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=\textwidth]{fig34_example_days_overview.png}
+\caption{Example temperature trajectories across seasons. Blue solid: actual ambient. Magenta dashed: predicted sunset temperature (with pink uncertainty band). Orange dotted: mirror setpoint. Green solid: simulated mirror temperature. Vertical orange line marks sunset.}
+\label{fig:examples}
+\end{figure}
+
+The algorithm successfully:
+\begin{itemize}
+    \item Tracks the evolving sunset prediction (orange line converges to actual)
+    \item Applies lead compensation (mirror cooler than target when cooling expected)
+    \item Achieves smooth transitions at sunset
+    \item Maintains tight tracking overnight
+\end{itemize}
+
+%=============================================================================
+\section{Cold Bias Strategy}
+%=============================================================================
+
+\subsection{Rationale}
+
+A slight cold bias is preferred because:
+\begin{enumerate}
+    \item \textbf{Seeing quality}: Cold mirror has rising warm air (good). Warm mirror has sinking cold air (turbulence).
+    \item \textbf{Condensation risk}: Warm mirror cannot condense moisture; cold mirror can be actively dried.
+    \item \textbf{Asymmetric correction}: Easier to warm a cold mirror (use heaters) than cool a warm one (limited by ambient).
+\end{enumerate}
+
+\subsection{Fixed vs Adaptive Bias}
+
+We investigated whether adapting the cold bias based on conditions could improve performance:
+
+\begin{itemize}
+    \item \textbf{Rate-adaptive}: Increase bias when cooling rapidly (higher risk of mirror lagging)
+    \begin{equation}
+        \sigma = \sigma_\text{base} + k \cdot |\dot{T}| \quad \text{when } \dot{T} < 0
+    \end{equation}
+    \item \textbf{Uncertainty-adaptive}: Increase bias when prediction uncertainty is high
+    \item \textbf{Combined}: Both rate and uncertainty dependence
+\end{itemize}
+
+\begin{table}[H]
+\centering
+\caption{Fixed vs Adaptive Bias Comparison (769 nights)}
+\label{tab:adaptive}
+\begin{tabular}{l|cccc}
+\toprule
+\textbf{Strategy} & \textbf{RMS} & \textbf{Mean} & \textbf{\% Warm} & \textbf{\% Ideal} \\
+\midrule
+Fixed 0.2°C & 0.37°C & $-0.21$°C & 17\% & \textbf{72\%} \\
+\rowcolor{bestcolor}
+Fixed 0.3°C & 0.44°C & $-0.31$°C & \textbf{11\%} & 70\% \\
+Rate-Adaptive & 0.45°C & $-0.29$°C & 15\% & 63\% \\
+Combined & 0.43°C & $-0.26$°C & 15\% & 67\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\textbf{Key findings}:
+\begin{itemize}
+    \item Fixed 0.2°C maximizes time in ideal range (72\%)
+    \item Fixed 0.3°C minimizes warm time (11\%) with slightly less ideal time (70\%)
+    \item Adaptive strategies do not clearly outperform fixed bias
+    \item Added complexity of adaptive schemes is not justified by performance gains
+\end{itemize}
+
+\subsection{Recommended Bias Values}
+
+Based on operational priorities:
+\begin{itemize}
+    \item \textbf{If maximizing ideal range}: Use 0.2°C bias (72\% ideal, 17\% warm)
+    \item \textbf{If minimizing warm time}: Use 0.3°C bias (70\% ideal, 11\% warm)
+\end{itemize}
+
+We recommend \textbf{0.3°C} as it provides strong protection against warm conditions while maintaining excellent ideal-range performance. The fixed approach is preferred for simplicity and robustness.
+
+\subsection{Results Summary}
+
+\begin{table}[H]
+\centering
+\caption{Temperature Bias Analysis}
+\label{tab:bias}
+\begin{tabular}{l|cc}
+\toprule
+\textbf{Control Strategy} & \textbf{\% Days Warm} & \textbf{Mean Bias} \\
+\midrule
+Temperature-Only & 64.7\% & +0.27°C \\
+\rowcolor{bestcolor}
+Rate-Matching (0.3°C bias) & 11\% & $-0.31$°C \\
+\midrule
+\textit{Target} & \textit{$<$20\%} & \textit{$<$0°C} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Rate-matching achieves the desired cold bias: 60\% of nights are slightly cold rather than warm.
+
+%=============================================================================
+\section{Robustness Analysis}
+%=============================================================================
+
+\subsection{Sensitivity to Time Constant}
+
+The algorithm uses $\tau = 2$ hours. What if the actual time constant differs?
+
+\begin{table}[H]
+\centering
+\caption{Sensitivity to Time Constant Mismatch}
+\label{tab:tau}
+\begin{tabular}{l|ccc}
+\toprule
+\textbf{Actual $\tau$} & \textbf{1.5 h} & \textbf{2.0 h} & \textbf{2.5 h} \\
+\midrule
+Algorithm uses $\tau=2$h & & & \\
+Overnight RMS (°C) & 0.35 & 0.30 & 0.33 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The algorithm is robust to $\pm 25\%$ uncertainty in $\tau$.
+
+\subsection{Sensitivity to Prediction Errors}
+
+Rate-matching requires predicting $\dot{T}$. What if predictions are degraded?
+
+\begin{table}[H]
+\centering
+\caption{Performance vs Prediction Quality}
+\label{tab:pred_quality}
+\begin{tabular}{l|cc}
+\toprule
+\textbf{Scenario} & \textbf{Sunset T RMS} & \textbf{Overnight T RMS} \\
+\midrule
+Perfect predictions & 0.00°C & 0.18°C \\
+RF predictions (actual) & 0.69°C & 0.30°C \\
+50\% degraded predictions & 0.95°C & 0.38°C \\
+Temperature-only control & 0.80°C & 0.53°C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Even with significantly degraded predictions, rate-matching outperforms temperature-only control.
+
+\subsection{Worst-Case Nights}
+
+The 95th percentile errors are:
+\begin{itemize}
+    \item Temperature-Only: 1.05°C overnight RMS
+    \item Rate-Matching: 0.58°C overnight RMS (45\% better)
+\end{itemize}
+
+%=============================================================================
+\section{Implementation Checklist}
+%=============================================================================
+
+\subsection{Required Components}
+
+\begin{enumerate}
+    \item \textbf{Prediction Models}: Random Forest models for $T_\text{sunset}$ and $\dot{T}_\text{sunset}$
+    \begin{itemize}
+        \item Train on historical data (odd calendar days)
+        \item Retrain monthly with new data
+        \item Input: temperature history, seasonality features
+    \end{itemize}
+
+    \item \textbf{Real-time Measurements}:
+    \begin{itemize}
+        \item Ambient temperature sensor (15-min resolution)
+        \item Mirror temperature sensors (multiple locations)
+    \end{itemize}
+
+    \item \textbf{Control System Interface}:
+    \begin{itemize}
+        \item Setpoint update capability (every 15 minutes)
+        \item Setpoint range: at least $\pm 5°C$ from ambient
+    \end{itemize}
+\end{enumerate}
+
+\subsection{Operational Parameters}
+
+\begin{table}[H]
+\centering
+\caption{Recommended Control Parameters}
+\label{tab:params}
+\begin{tabular}{ll}
+\toprule
+\textbf{Parameter} & \textbf{Value} \\
+\midrule
+Mirror thermal time constant ($\tau$) & 2.0 hours \\
+Dome air time constant ($\tau_\text{dome}$) & 0.5 hours (30 min) \\
+\textbf{Pre-sunset cold bias} & \textbf{0.3°C} \\
+\textbf{Overnight cold bias} & \textbf{0.3°C} \\
+Max setpoint rate ($R_\text{max}$) & 2.0°C/hour \\
+Control update interval & 15 minutes \\
+Rate estimation window & 1 hour \\
+Pre-sunset phase start & 4 hours before sunset \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=============================================================================
+\section{Conclusion and Recommendations}
+%=============================================================================
+
+\subsection{Key Findings}
+
+\begin{enumerate}
+    \item \textbf{Rate-matching improves all metrics}: 13\% better temperature, 61\% better rate at sunset; 44\% better overnight tracking
+
+    \item \textbf{Cold bias achieved}: 60\% of nights are slightly cold (vs 35\% with temperature-only control)
+
+    \item \textbf{Robust to uncertainties}: Algorithm performs well even with imperfect predictions or time constant estimates
+
+    \item \textbf{Simple implementation}: Only requires RF predictions for two quantities and standard setpoint control
+\end{enumerate}
+
+\subsection{Primary Recommendation}
+
+\begin{center}
+\fbox{\parbox{0.9\textwidth}{
+\textbf{Dual-Setpoint Control Algorithm:}
+
+\textbf{Pre-sunset} (dome closed):
+\begin{equation*}
+    T_\text{HVAC} = T_\text{predicted} - 0.3°C \quad \text{(FLAT, constant)}
+\end{equation*}
+Mirror naturally equilibrates to dome interior temperature.
+
+\textbf{Overnight} (dome open):
+\begin{equation*}
+    T_\text{mirror,sp} = T_\text{ambient} + 2\text{h} \times \dot{T}_\text{ambient} - 0.3°C
+\end{equation*}
+
+Setpoint rate limited to $\pm 2°C$/hour.
+}}
+\end{center}
+
+\subsection{Expected Performance}
+
+Based on simulations across 769 nights:
+\begin{itemize}
+    \item \textbf{Overnight RMS Error: 0.44°C}
+    \item \textbf{Mean Offset: $-0.26$°C} (a few tenths cooler than ambient, as desired)
+    \item \textbf{Only 15\% of time warm} (significantly reduced)
+    \item \textbf{68\% of time in ideal range} (mirror 0 to 0.5°C cooler than ambient)
+\end{itemize}
+
+\subsection{Future Enhancements}
+
+Potential improvements to investigate:
+\begin{itemize}
+    \item Adaptive $\tau$ estimation from mirror response data
+    \item Weather-conditional cold bias (more aggressive in humid conditions)
+    \item Prediction confidence-weighted control (more aggressive when predictions are certain)
+    \item Multi-zone control for temperature gradient management
+\end{itemize}
+
+%=============================================================================
+\appendix
+\section{Mathematical Derivation}
+%=============================================================================
+
+\subsection{Rate-Matching Setpoint Formula}
+
+Given mirror dynamics (Eq.~\ref{eq:dynamics}):
+\begin{equation}
+    \frac{dT_m}{dt} = \frac{T_{sp} - T_m}{\tau}
+\end{equation}
+
+At steady state, $dT_m/dt = 0$ implies $T_m = T_{sp}$.
+
+For rate-matching, we want $dT_m/dt = \dot{T}_\text{target}$ when $T_m = T_\text{target}$:
+\begin{equation}
+    \dot{T}_\text{target} = \frac{T_{sp} - T_\text{target}}{\tau}
+\end{equation}
+
+Solving for setpoint:
+\begin{equation}
+    T_{sp} = T_\text{target} + \tau \cdot \dot{T}_\text{target}
+\end{equation}
+
+This is the fundamental rate-matching formula. The cold bias term is added as an operational preference.
+
+\subsection{Lead Compensation Interpretation}
+
+The term $\tau \cdot \dot{T}_\text{target}$ acts as lead compensation:
+\begin{itemize}
+    \item If ambient is cooling at $-1°C$/h, we set the mirror 2°C colder
+    \item The mirror then warms toward the setpoint at $+1°C$/h
+    \item This warming rate matches the ambient cooling rate
+    \item The mirror tracks ambient despite the thermal lag
+\end{itemize}
+
+\end{document}

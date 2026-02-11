@@ -1,0 +1,11 @@
+ here is the plan: we need to find out what function of temperature, namely the time history of ambient temperature and forward-looking prediction,       
+  optimizes thermal control of the mirror. The optimization function is keeping it as close as possible to 0.3 degrees below ambient. Run a full suite of  
+  comparisons where you assume we can regulate it with HVAC system between sunup and sundown. The enclosure opens at sundown and then the air in the dome  
+  rapidly equilibrateas to ambient. Imagine taking some weighted function of temperature history and prediction and using values and rates, figure out     
+  what the optimal algorithm is. Provide diagnostic plors of temperature differences and a hisotgram of performance over the entire period. If you choose  
+  to do some kind of machine learning training, use even dates for training and odd dates for performance evalustion. Don't waste any time figuring out a  
+  prediction method, but rather assume we have perfect predictive capability. Ask any questions of clarificaiton needed, and take your time to fully       
+  explore all scope of candidate control protocols. tell me how you plan to approach this                                                                  
+
+⏺ I'll explore the existing codebase to understand the simulation infrastructure, then cla
+

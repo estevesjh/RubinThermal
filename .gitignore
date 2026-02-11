@@ -1,0 +1,55 @@
+# Data files (too large for git)
+*.csv
+*.pkl
+*.zip
+
+# Archive/snapshot directories
+outdated/
+Version*/
+Jan17FinalThermal/
+jpg_figs/
+obsolete_figs/
+
+# Presentations (large binaries)
+*.pptx
+
+# PDF reference papers
+forecasting-06-00004*.pdf
+
+# LaTeX auxiliary files
+*.aux
+*.log
+*.out
+*.synctex.gz
+*.fls
+*.fdb_latexmk
+*.bbl
+*.blg
+*.toc
+*.nav
+*.snm
+
+# Duplicate acrobat PDFs
+*_acrobat.pdf
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+*.egg-info/
+.eggs/
+
+# Jupyter
+.ipynb_checkpoints/
+
+# IDE / Editor
+.claude/
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
