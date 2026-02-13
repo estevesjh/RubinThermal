@@ -1,94 +1,131 @@
 # Rubin Observatory Mirror Thermal Control
 
-Simulation and optimization of the thermal control system for the Rubin Observatory M1M3 primary/tertiary mirror at Cerro Pachon, Chile.
+Simulation and optimization of thermal control algorithms for the Rubin Observatory M1M3 primary/tertiary mirror at Cerro Pachon, Chile.
 
-## Problem
+## The Problem
 
-The M1M3 mirror has a large thermal time constant (~3 hours), meaning it cannot quickly track changes in ambient temperature. If the mirror is warmer than the surrounding air, convective plumes degrade image quality ("mirror seeing"). The goal is to keep the mirror approximately 0.3C below ambient at all times during nighttime observing, while respecting physical constraints on how fast the thermal control system can change its setpoint.
+The M1M3 mirror has a large thermal mass (time constant ~3 hours). If the mirror is warmer than ambient air, convective plumes cause "mirror seeing" that degrades image quality. The goal is to keep the mirror **~0.3°C below ambient** during nighttime observing.
 
-## Three-Phase Control Algorithm
+## Quick Start
 
-The core approach divides each 24-hour cycle into three phases:
+```bash
+# Install dependencies
+pip install -r requirements.txt
 
-**Phase 1 -- Daytime** (until T1 hours before sunset)
-- Dome is closed; HVAC maintains a fixed setpoint equal to the predicted sunset temperature minus a 0.3C cold bias.
+# Run optimization to find best parameters
+python scripts/optimize.py
 
-**Phase 2 -- Pre-Sunset Transition** (T1 to T2 hours before sunset)
-- Linear ramp from the fixed daytime setpoint toward active ambient tracking with rate compensation.
-- Bridges the gap between the static daytime target and the dynamic overnight algorithm.
-
-**Phase 3 -- Overnight** (T2 hours before sunset through sunrise)
-- Weighted lookahead algorithm using predicted ambient temperatures over the next 0-3 hours.
-- Includes rate-of-change compensation (0.5 * tau * dT/dt) to account for thermal lag.
-- Targets mirror temperature = ambient - 0.3C.
-
-### Physical Parameters
-
-| Parameter | Value | Description |
-|-----------|-------|-------------|
-| tau | 3.0 h | Mirror thermal time constant |
-| Max rate | 0.7 C/h | Maximum setpoint change rate |
-| Cold bias | 0.3 C | Target offset below ambient |
-| dt | 15 min | Simulation timestep |
+# Generate performance plots
+python scripts/performance.py
+```
 
 ## Repository Structure
 
-### Simulation Code
-
-- `three_phase_control.py` -- Main optimization script. Performs grid search over phase2 algorithms, T1, and T2 values using a train/test split (even/odd dates). Generates best-configuration plots.
-- `three_phase_performance_plots.py` -- Generates detailed performance figures: error histograms, CDFs, 20-night overview grid, and 6-night detailed views.
-- `sun_utils.py` -- Accurate sunrise/sunset calculations for Cerro Pachon using astropy. Provides `get_sun_times_for_date()` used by all simulation scripts.
-
-### Analysis & Visualization
-
-- `control_comparison_histogram.py` -- Compares three strategies: (1) match ambient, (2) fixed bias (ambient - 0.75C), (3) three-phase control. Generates overlay histograms.
-- `mirror_rate_histogram.py` -- Analyzes distribution of mirror vs ambient temperature rates of change during nighttime.
-- `three_day_plot.py` -- Generates a continuous 3-day simulation showing phase transitions, day/night cycles, and control behavior.
-- `analyze_warm_tail.py` -- Studies the warm-side tail of the error distribution (mirror warmer than ambient).
-
-### Reports
-
-- `thermal_control_report.tex` -- Comprehensive thermal control methodology and results.
-- `report1_prediction_methods.tex` -- Comparison of temperature prediction approaches.
-- `report2_thermal_control.tex` -- Thermal control system analysis.
-- `RAMP_algorithm_report.tex` -- Technical description of the RAMP control algorithm.
-- `slides_thermal_summary.tex` -- Beamer presentation slides.
-- `sunset_temperature_prediction_report.tex` -- Sunset temperature prediction methodology.
-
-### Data
-
-The temperature history CSV (not tracked in git due to size) contains ~50 days of continuous ambient temperature measurements from Cerro Pachon (December 2025 - January 2026) at sub-hourly resolution. Contact the authors for access.
-
-## Usage
-
-Run the optimization:
-```bash
-python3 three_phase_control.py
+```
+RubinThermal/
+├── config.yaml           # All tunable parameters
+├── rubin_thermal/        # Python package
+├── scripts/              # Analysis scripts
+├── tests/                # Unit tests (44 tests)
+├── data/                 # Temperature CSV files
+├── figures/              # Output plots
+├── docs/                 # Reports (PDF/TeX)
+└── notebooks/            # Jupyter notebooks
 ```
 
-Generate performance plots:
-```bash
-python3 three_phase_performance_plots.py
+## Scripts
+
+| Script | Purpose | Output |
+|--------|---------|--------|
+| `scripts/optimize.py` | Grid search over T1, T2, algorithms | Best config + `*_best.png`, `*_examples.png` |
+| `scripts/performance.py` | Evaluate current config | `*_histograms.png`, `*_20_nights.png`, `*_detailed_nights.png` |
+| `scripts/compare.py` | Compare vs baseline strategies | `control_comparison_*.png` |
+| `scripts/rate_analysis.py` | Mirror rate-of-change analysis | `mirror_rate_histogram.png` |
+| `scripts/three_day.py` | 3-day continuous simulation | `three_phase_3day.png` |
+| `scripts/warm_tail.py` | Analyze warm events (mirror > ambient) | Console output |
+
+### Recommended Order
+
+1. **`optimize.py`** — Find optimal T1, T2, and phase2 algorithm
+2. **`performance.py`** — Generate detailed performance plots
+3. **`compare.py`** — See improvement over baselines
+
+## Output Plots
+
+All plots are saved to `figures/`. Key outputs:
+
+| Plot | Description |
+|------|-------------|
+| `three_phase_07rate_3tau_histograms.png` | Error distribution histograms + CDF |
+| `three_phase_07rate_3tau_20_nights.png` | Grid of 20 example nights |
+| `three_phase_07rate_3tau_detailed_nights.png` | 6 nights with error traces |
+| `control_comparison_histogram.png` | Three-phase vs baselines |
+| `three_phase_3day.png` | 3-day continuous simulation |
+
+## Configuration
+
+All parameters are in `config.yaml`:
+
+```yaml
+physics:
+  tau: 3.0              # Mirror thermal time constant (hours)
+  max_rate: 0.7         # Maximum setpoint change rate (C/hour)
+  cold_bias: 0.3        # Target below ambient (C)
+
+control:
+  t1: -2                # Phase 2 start (hours before sunset)
+  t2: 0                 # Phase 3 start (at sunset)
 ```
 
-Both scripts expect the data file `temp_history_all_dec2025_sunrise_sunset.csv` in the working directory.
+## The Three-Phase Algorithm
 
-### Dependencies
-
-- numpy
-- pandas
-- matplotlib
-- astropy
-- scipy
+| Phase | Time | Algorithm |
+|-------|------|-----------|
+| **1. Daytime** | t < T1 | Fixed setpoint = predicted sunset temp - 0.3°C |
+| **2. Transition** | T1 ≤ t < T2 | Linear ramp from fixed → tracking |
+| **3. Overnight** | t ≥ T2 | Weighted lookahead + rate compensation |
 
 ## Results
 
-With tau = 3.0 h and max setpoint rate = 0.7 C/h, the optimal configuration (Ramp fixed-to-track, T1 = -2h, T2 = 0h) achieves on the 392-night test set:
+Optimal config: **T1=-2h, T2=0h, Ramp fixed→track**
 
-- **Sunset error:** -0.08 +/- 0.11 C (100% within +/-0.3C)
-- **Overnight RMS:** 0.44 C
-- **Overnight within +/-0.3C:** ~59%
+| Metric | Value |
+|--------|-------|
+| Sunset error | -0.08 ± 0.11°C |
+| Sunset within ±0.3°C | 100% |
+| Overnight RMS | 0.44°C |
+| Overnight within ±0.3°C | ~59% |
+
+*Tested on 392 nights (odd-date test set)*
+
+## Data
+
+Temperature data goes in `data/`:
+- `temp_history_all_dec2025_sunrise_sunset.csv` — Primary dataset (~50 days)
+- `temp_history_jan2026.csv` — Additional data
+
+## Reports
+
+Technical documentation in `docs/`:
+- `thermal_control_report.pdf` — Main methodology
+- `RAMP_algorithm_report.pdf` — Algorithm details
+- `slides_thermal_summary.pdf` — Presentation slides
+
+## Running Tests
+
+```bash
+pytest tests/ -v
+```
+
+44 tests covering physics, data loading, control algorithms, and simulation.
 
 ## Location
 
-Cerro Pachon, Chile: 30.2444 S, 70.7494 W, elevation 2700 m.
+Cerro Pachon, Chile: 30.2444°S, 70.7494°W, 2700m elevation
+
+## Dependencies
+
+- numpy, pandas, matplotlib, scipy
+- astropy (sun calculations)
+- pyyaml (configuration)
+- pytest (testing)

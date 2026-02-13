@@ -8,9 +8,9 @@ physics:
   cold_bias: 0.3        # Target below ambient (C)
   dt: 0.25              # Simulation timestep (hours) = 15 minutes
 
-# Control parameters
+# Control parameters (optimal from grid search)
 control:
-  t1: -3                # Phase 2 start (hours before sunset)
+  t1: -2                # Phase 2 start (hours before sunset)
   t2: 0                 # Phase 3 start (at sunset)
   lookahead_hours: 3.0  # Lookahead window for phase 3
   lookahead_points: 13  # Points in lookahead kernel

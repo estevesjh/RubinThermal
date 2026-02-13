@@ -25,13 +25,16 @@ RubinThermal/
 │   ├── three_day.py         # 3-day continuous plot
 │   └── warm_tail.py         # Warm tail analysis
 │
-├── tests/                   # Unit and integration tests
-│   ├── test_physics.py
-│   ├── test_data.py
-│   ├── test_control.py
-│   └── test_simulation.py
+├── tests/                   # Unit and integration tests (44 tests)
+│   ├── conftest.py          # Pytest fixtures
+│   ├── test_physics.py      # Physics functions tests
+│   ├── test_data.py         # Data loading tests
+│   ├── test_control.py      # Control algorithm tests
+│   ├── test_simulation.py   # Integration tests
+│   ├── fixtures/            # Test data samples
+│   └── golden/              # Expected outputs for regression
 │
-├── data/                    # Temperature data (not in git)
+├── data/                    # Temperature data
 ├── figures/                 # Output plots
 ├── docs/                    # Reports and presentations
 ├── notebooks/               # Jupyter notebooks
@@ -46,7 +49,7 @@ RubinThermal/
 The active control algorithm is a **three-phase system**:
 
 - **Phase 1 (Daytime):** Fixed setpoint at predicted sunset temperature minus 0.3C cold bias. Dome is closed, HVAC maintains temperature.
-- **Phase 2 (Pre-sunset transition):** Linear ramp from fixed to tracking. Best config uses T1=-3h (start), T2=0h (end at sunset).
+- **Phase 2 (Pre-sunset transition):** Linear ramp from fixed to tracking. Best config uses T1=-2h (start), T2=0h (end at sunset).
 - **Phase 3 (Overnight):** Weighted lookahead over next 0-3 hours with rate compensation (0.5 * tau * dT/dt) and 0.3C cold bias.
 
 ### Configuration
@@ -61,7 +64,7 @@ physics:
   dt: 0.25              # Simulation timestep (hours)
 
 control:
-  t1: -3                # Phase 2 start (hours before sunset)
+  t1: -2                # Phase 2 start (hours before sunset)
   t2: 0                 # Phase 3 start (at sunset)
   lookahead_hours: 3.0
   lookahead_points: 13
@@ -78,12 +81,23 @@ control:
 
 ```python
 from rubin_thermal import (
+    # Config
     CONFIG,
+    load_config,
+    get_project_root,
+    # Data
     load_temperature_data,
     build_day_database,
     train_test_split,
+    # Physics
     ThermalModel,
+    interpolate_temp,
+    compute_rate,
+    make_linear_kernel,
+    # Control
     three_phase_setpoint,
+    # Sun
+    get_sun_times_for_date,
 )
 
 # Load data
@@ -92,10 +106,14 @@ days = build_day_database(df)
 train_days, test_days = train_test_split(days)
 
 # Create model with config parameters
-model = ThermalModel()
+model = ThermalModel()  # Uses CONFIG values by default
 
 # Compute setpoint for a given time
 setpoint, phase = three_phase_setpoint(t, T_amb, T_sunset, rate, hours, temps)
+
+# Thermal dynamics step
+new_temp = model.step(T_mirror_current, T_setpoint)
+limited_setpoint = model.apply_rate_limit(new_setpoint, old_setpoint)
 ```
 
 ## Thermal Model
@@ -115,29 +133,62 @@ The setpoint is rate-limited: `|dT_setpoint/dt| <= MAX_RATE`.
 - Error is defined as `T_mirror - (T_ambient - COLD_BIAS)`, so negative error = colder than target (acceptable), positive error = warmer than target (bad).
 - Performance is evaluated from sunset to sunrise only (overnight observing window).
 
+## Module Breakdown
+
+### `rubin_thermal/config.py`
+Loads `config.yaml` and provides `CONFIG` dict with all parameters.
+
+### `rubin_thermal/data.py`
+- `load_temperature_data()` -- Load CSV, add 'hours' column
+- `build_day_database(df)` -- Build list of day dicts with sunset times and temp arrays
+- `train_test_split(days)` -- Split by even/odd dates
+
+### `rubin_thermal/physics.py`
+- `interpolate_temp()`, `compute_rate()`, `make_linear_kernel()` -- Utility functions
+- `thermal_step()` -- Single-step thermal dynamics
+- `ThermalModel` -- Class encapsulating tau, max_rate, dt
+
+### `rubin_thermal/control.py`
+- `phase1_fixed()`, `phase2_ramp()`, `phase3_lookahead()` -- Phase algorithms
+- `three_phase_setpoint()` -- Unified setpoint function returning (setpoint, phase)
+
+### `rubin_thermal/sun.py`
+- `get_sunset_utc()`, `get_sunrise_utc()` -- Sun position calculations using astropy
+- `get_sun_times_for_date()` -- Get sunset/sunrise for a specific date
+
 ## Running Scripts
 
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Run optimization (grid search)
+# Run optimization (grid search over T1, T2, phase2 algorithms)
 python scripts/optimize.py
 
-# Generate performance plots
+# Generate performance histograms and example night plots
 python scripts/performance.py
 
-# Compare control strategies
+# Compare three-phase vs baseline strategies
 python scripts/compare.py
 
-# Run tests
+# Analyze mirror temperature change rates
+python scripts/rate_analysis.py
+
+# Generate 3-day continuous plot
+python scripts/three_day.py
+
+# Analyze warm tail events (mirror > ambient)
+python scripts/warm_tail.py
+
+# Run all tests (44 tests)
 pytest tests/ -v
 ```
 
-## Data Files (not in git)
+## Data Files
 
-Place temperature data in `data/`:
+Temperature data in `data/`:
 - `temp_history_all_dec2025_sunrise_sunset.csv` -- Primary dataset. Columns: `timestamp`, `y` (temperature in C). ~50 days of continuous ambient temperature at sub-hourly resolution from Cerro Pachon, Dec 2025 - Jan 2026.
+- `temp_history_jan2026.csv` -- Additional January 2026 data.
 
 ## Plot Naming Convention
 
