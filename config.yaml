@@ -1,0 +1,27 @@
+# RubinThermal Configuration
+# All parameters for the mirror thermal control simulation
+
+# Physical parameters
+physics:
+  tau: 3.0              # Mirror thermal time constant (hours)
+  max_rate: 0.7         # Maximum setpoint change rate (C/hour)
+  cold_bias: 0.3        # Target below ambient (C)
+  dt: 0.25              # Simulation timestep (hours) = 15 minutes
+
+# Control parameters
+control:
+  t1: -3                # Phase 2 start (hours before sunset)
+  t2: 0                 # Phase 3 start (at sunset)
+  lookahead_hours: 3.0  # Lookahead window for phase 3
+  lookahead_points: 13  # Points in lookahead kernel
+
+# Observatory location (Cerro Pachon, Chile)
+location:
+  lat: -30.2444
+  lon: -70.7494
+  elevation: 2700       # meters
+
+# Paths (relative to project root)
+paths:
+  data: "data/temp_history_all_dec2025_sunrise_sunset.csv"
+  figures: "figures"
