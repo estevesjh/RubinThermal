@@ -25,13 +25,17 @@ for each scenario, considering both tracking error and gradient damage.
 
 import sys
 from pathlib import Path
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-import numpy as np
 import matplotlib
+import numpy as np
+
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
 import warnings
+
+import matplotlib.pyplot as plt
+
 warnings.filterwarnings("ignore")
 
 from dataclasses import dataclass
@@ -39,12 +43,12 @@ from typing import Dict, List, Tuple
 
 from rubin_thermal import (
     CONFIG,
-    load_temperature_data,
     build_day_database,
-    train_test_split,
-    interpolate_temp,
     compute_rate,
+    interpolate_temp,
+    load_temperature_data,
     make_linear_kernel,
+    train_test_split,
 )
 from rubin_thermal.config import get_figures_path
 from rubin_thermal.gradient_model import TwoZoneThermalModel
@@ -70,6 +74,7 @@ class GradientScenario:
     color : str
         Color for plotting
     """
+
     name: str
     description: str
     tau_gradient: float
@@ -78,20 +83,20 @@ class GradientScenario:
     color: str
 
 
-# Define the three scenarios
+# Define the three scenarios (with more differentiated weights)
 SCENARIOS = {
     "conservative": GradientScenario(
         name="Conservative (Honeycomb-Safe)",
         description="Assumes worst-case honeycomb thermal patterns",
         tau_gradient=3.0,
         gradient_threshold=0.3,
-        penalty_weight=2.0,
+        penalty_weight=5.0,  # High weight - strongly penalize gradients
         color="tab:blue",
     ),
     "moderate": GradientScenario(
         name="Moderate (Balanced)",
         description="Balanced approach between tracking and gradients",
-        tau_gradient=2.5,
+        tau_gradient=3.0,
         gradient_threshold=0.5,
         penalty_weight=1.0,
         color="tab:green",
@@ -99,15 +104,15 @@ SCENARIOS = {
     "aggressive": GradientScenario(
         name="Aggressive (Performance-Focused)",
         description="Prioritizes tracking performance",
-        tau_gradient=2.0,
+        tau_gradient=3.0,
         gradient_threshold=0.8,
-        penalty_weight=0.5,
+        penalty_weight=0.2,  # Low weight - prioritize tracking
         color="tab:orange",
     ),
 }
 
-# Max rate values to sweep
-MAX_RATES = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0]
+# Max rate values to sweep (finer resolution)
+MAX_RATES = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.0, 1.25, 1.5, 1.75, 2.0]
 
 
 def compute_gradient_penalty(
@@ -144,7 +149,7 @@ def compute_gradient_penalty(
     # Gradient magnitude penalty (quadratic above threshold)
     if abs(gradient) > threshold:
         excess = abs(gradient) - threshold
-        instant_penalty = excess ** 2
+        instant_penalty = excess**2
     else:
         instant_penalty = 0.0
 
@@ -190,12 +195,16 @@ def simulate_scenario(
     T_sunset = day["T_sunset"]
 
     # Create two-zone model with scenario parameters
+    # Fast surface response (0.25h) with active cooling
+    # Rate-gradient coupling makes gradient proportional to rate of change
     model = TwoZoneThermalModel(
         tau_bulk=tau,
+        tau_surface=1.0,  # Fast with active cooling
         tau_gradient=scenario.tau_gradient,
         max_rate=max_rate,
         dt=dt,
         cold_bias=cold_bias,
+        rate_gradient_coupling=0.3,  # Gradient scales with rate
     )
 
     # Initialize at sunset temperature
@@ -265,14 +274,22 @@ def simulate_scenario(
     T_target = T_ambient - cold_bias
     errors = T_surface - T_target
     overnight_errors = errors[overnight_mask]
+    abs_errors = np.abs(overnight_errors)
 
-    tracking_rms = np.sqrt(np.mean(overnight_errors ** 2))
-    tracking_within_03 = 100 * np.mean(np.abs(overnight_errors) < 0.3)
+    # Tracking metrics - percentiles and thresholds
+    tracking_rms = np.sqrt(np.mean(overnight_errors**2))
+    tracking_median = np.median(abs_errors)
+    tracking_p68 = np.percentile(abs_errors, 68)
+    tracking_p95 = np.percentile(abs_errors, 95)
+    tracking_within_03 = 100 * np.mean(abs_errors < 0.3)
+    tracking_within_05 = 100 * np.mean(abs_errors < 0.5)
+    tracking_within_10 = 100 * np.mean(abs_errors < 1.0)
 
-    # Gradient metrics (overnight)
+    # Gradient metrics (overnight) - return raw arrays for global percentile calculation
     overnight_gradients = gradients[overnight_mask]
-    peak_gradient = np.max(np.abs(overnight_gradients))
-    rms_gradient = np.sqrt(np.mean(overnight_gradients ** 2))
+    abs_gradients = np.abs(overnight_gradients)
+    peak_gradient = np.max(abs_gradients)  # Keep for reference
+    rms_gradient = np.sqrt(np.mean(overnight_gradients**2))
 
     # Accumulated penalties (overnight)
     overnight_instant = instant_penalties[overnight_mask]
@@ -296,9 +313,17 @@ def simulate_scenario(
         "instant_penalties": instant_penalties,
         "rate_penalties": rate_penalties,
         "date": day["date"],
-        # Metrics
+        # Tracking metrics
         "tracking_rms": tracking_rms,
+        "tracking_median": tracking_median,
+        "tracking_p68": tracking_p68,
+        "tracking_p95": tracking_p95,
         "tracking_within_03": tracking_within_03,
+        "tracking_within_05": tracking_within_05,
+        "tracking_within_10": tracking_within_10,
+        # Gradient metrics - return raw arrays for global percentile
+        "overnight_abs_errors": abs_errors,
+        "overnight_abs_gradients": abs_gradients,
         "peak_gradient": peak_gradient,
         "rms_gradient": rms_gradient,
         "accumulated_penalty": accumulated_penalty,
@@ -333,8 +358,9 @@ def run_sweep(
     for max_rate in max_rates:
         print(f"  max_rate = {max_rate:.2f} C/h...")
 
-        all_tracking_rms = []
-        all_within_03 = []
+        # Collect raw data from all nights for global percentiles
+        all_abs_errors = []
+        all_abs_gradients = []
         all_peak_gradient = []
         all_rms_gradient = []
         all_accumulated = []
@@ -342,18 +368,41 @@ def run_sweep(
 
         for day in days:
             result = simulate_scenario(day, scenario, max_rate)
-            all_tracking_rms.append(result["tracking_rms"])
-            all_within_03.append(result["tracking_within_03"])
+            # Collect raw arrays for global percentile calculation
+            all_abs_errors.append(result["overnight_abs_errors"])
+            all_abs_gradients.append(result["overnight_abs_gradients"])
             all_peak_gradient.append(result["peak_gradient"])
             all_rms_gradient.append(result["rms_gradient"])
             all_accumulated.append(result["accumulated_penalty"])
             all_combined.append(result["combined_objective"])
 
+        # Concatenate all data points from all nights
+        global_abs_errors = np.concatenate(all_abs_errors)
+        global_abs_gradients = np.concatenate(all_abs_gradients)
+
+        # Compute global percentiles over ALL data points
+        tracking_median = np.median(global_abs_errors)
+        tracking_p68 = np.percentile(global_abs_errors, 68)
+        tracking_p95 = np.percentile(global_abs_errors, 95)
+        within_05 = 100 * np.mean(global_abs_errors < 0.5)
+        within_10 = 100 * np.mean(global_abs_errors < 1.0)
+
+        # Gradient percentiles - median, 68th, 95th
+        gradient_median = np.median(global_abs_gradients)
+        gradient_p68 = np.percentile(global_abs_gradients, 68)
+        gradient_p95 = np.percentile(global_abs_gradients, 95)
+
         results[max_rate] = {
-            "tracking_rms_mean": np.mean(all_tracking_rms),
-            "tracking_rms_std": np.std(all_tracking_rms),
-            "within_03_mean": np.mean(all_within_03),
-            "within_03_std": np.std(all_within_03),
+            # Tracking metrics - global percentiles over all data
+            "tracking_median_mean": tracking_median,
+            "tracking_p68_mean": tracking_p68,
+            "tracking_p95_mean": tracking_p95,
+            "within_05_mean": within_05,
+            "within_10_mean": within_10,
+            # Gradient metrics - global percentiles over all data
+            "gradient_median_mean": gradient_median,
+            "gradient_p68_mean": gradient_p68,
+            "gradient_p95_mean": gradient_p95,
             "peak_gradient_mean": np.mean(all_peak_gradient),
             "peak_gradient_std": np.std(all_peak_gradient),
             "rms_gradient_mean": np.mean(all_rms_gradient),
@@ -394,28 +443,36 @@ def find_optimal_rate(results: dict) -> float:
 
 def print_summary_table(all_results: Dict[str, dict]) -> None:
     """Print summary table of results."""
-    print("\n" + "=" * 100)
+    print("\n" + "=" * 120)
     print("GRADIENT SCENARIOS SUMMARY")
-    print("=" * 100)
+    print("=" * 120)
 
     for scenario_key, (scenario, results) in all_results.items():
         optimal_rate = find_optimal_rate(results)
         print(f"\n{scenario.name}")
-        print(f"  tau_gradient={scenario.tau_gradient}h, threshold={scenario.gradient_threshold}C, weight={scenario.penalty_weight}")
-        print("-" * 80)
-        print(f"{'max_rate':>10} | {'Track RMS':>10} | {'Within 0.3':>10} | {'Peak Grad':>10} | {'Accum Pen':>10} | {'Combined':>10}")
-        print(f"{'(C/h)':>10} | {'(C)':>10} | {'(%)':>10} | {'(C)':>10} | {'(C^2*h)':>10} | {'objective':>10}")
-        print("-" * 80)
+        print(
+            f"  tau_gradient={scenario.tau_gradient}h, threshold={scenario.gradient_threshold}C, weight={scenario.penalty_weight}"
+        )
+        print("-" * 120)
+        print(
+            f"{'Rate':>8} | {'Median':>8} | {'68%ile':>8} | {'95%ile':>8} | {'<0.5C':>8} | {'<1.0C':>8} | {'Grad 95%':>10} | {'Combined':>10}"
+        )
+        print(
+            f"{'(C/h)':>8} | {'(C)':>8} | {'(C)':>8} | {'(C)':>8} | {'(%)':>8} | {'(%)':>8} | {'(C)':>10} | {'objective':>10}"
+        )
+        print("-" * 120)
 
         for rate in MAX_RATES:
             m = results[rate]
             marker = " <-- optimal" if rate == optimal_rate else ""
             print(
-                f"{rate:>10.2f} | "
-                f"{m['tracking_rms_mean']:>10.3f} | "
-                f"{m['within_03_mean']:>10.1f} | "
-                f"{m['peak_gradient_mean']:>10.3f} | "
-                f"{m['accumulated_mean']:>10.4f} | "
+                f"{rate:>8.2f} | "
+                f"{m['tracking_median_mean']:>8.3f} | "
+                f"{m['tracking_p68_mean']:>8.3f} | "
+                f"{m['tracking_p95_mean']:>8.3f} | "
+                f"{m['within_05_mean']:>8.1f} | "
+                f"{m['within_10_mean']:>8.1f} | "
+                f"{m['gradient_p95_mean']:>10.3f} | "
                 f"{m['combined_mean']:>10.3f}{marker}"
             )
 
@@ -425,8 +482,8 @@ def create_figure(all_results: Dict[str, dict], figures_path: Path) -> None:
     Create summary figure with tracking and gradient panels.
 
     Layout:
-    - Top row: Tracking performance vs max_rate (3 panels, one per scenario)
-    - Bottom row: Gradient penalty vs max_rate (3 panels)
+    - Top row: Tracking percentiles (median, 68%, 95%) vs max_rate (3 panels)
+    - Bottom row: Tracking thresholds (% <0.5C, <1.0C) and gradient 95th %ile (3 panels)
     """
     fig, axes = plt.subplots(2, 3, figsize=(16, 10))
 
@@ -437,87 +494,157 @@ def create_figure(all_results: Dict[str, dict], figures_path: Path) -> None:
         optimal_rate = find_optimal_rate(results)
 
         rates = np.array(MAX_RATES)
-        tracking_rms = np.array([results[r]["tracking_rms_mean"] for r in rates])
-        tracking_std = np.array([results[r]["tracking_rms_std"] for r in rates])
-        within_03 = np.array([results[r]["within_03_mean"] for r in rates])
-        peak_grad = np.array([results[r]["peak_gradient_mean"] for r in rates])
-        peak_grad_std = np.array([results[r]["peak_gradient_std"] for r in rates])
-        accumulated = np.array([results[r]["accumulated_mean"] for r in rates])
-        combined = np.array([results[r]["combined_mean"] for r in rates])
+        # Tracking percentiles
+        tracking_median = np.array([results[r]["tracking_median_mean"] for r in rates])
+        tracking_p68 = np.array([results[r]["tracking_p68_mean"] for r in rates])
+        tracking_p95 = np.array([results[r]["tracking_p95_mean"] for r in rates])
+        # Tracking thresholds
+        within_05 = np.array([results[r]["within_05_mean"] for r in rates])
+        within_10 = np.array([results[r]["within_10_mean"] for r in rates])
+        # Gradient percentiles (median, 68th, 95th)
+        grad_median = np.array([results[r]["gradient_median_mean"] for r in rates])
+        grad_p68 = np.array([results[r]["gradient_p68_mean"] for r in rates])
+        grad_p95 = np.array([results[r]["gradient_p95_mean"] for r in rates])
 
-        # Top row: Tracking performance
+        # Top row: Tracking percentiles
         ax = axes[0, col]
-        ax2 = ax.twinx()
 
-        # Plot RMS on left axis
-        line1, = ax.plot(rates, tracking_rms, "o-", color=scenario.color, linewidth=2, markersize=8, label="RMS Error")
-        ax.fill_between(rates, tracking_rms - tracking_std, tracking_rms + tracking_std, color=scenario.color, alpha=0.2)
-        ax.set_ylabel("Tracking RMS (C)", color=scenario.color)
-        ax.tick_params(axis="y", labelcolor=scenario.color)
+        # Plot median, 68th, 95th percentile
+        ax.plot(
+            rates,
+            tracking_median,
+            "o-",
+            color="tab:green",
+            linewidth=2,
+            markersize=8,
+            label="Median",
+        )
+        ax.plot(
+            rates,
+            tracking_p68,
+            "s--",
+            color="tab:blue",
+            linewidth=2,
+            markersize=7,
+            label="68th %ile",
+        )
+        ax.plot(
+            rates,
+            tracking_p95,
+            "^:",
+            color="tab:red",
+            linewidth=2,
+            markersize=7,
+            label="95th %ile",
+        )
 
-        # Plot within 0.3C on right axis
-        line2, = ax2.plot(rates, within_03, "s--", color="gray", linewidth=2, markersize=6, label="Within 0.3C")
-        ax2.set_ylabel("Within +/-0.3C (%)", color="gray")
-        ax2.tick_params(axis="y", labelcolor="gray")
-        ax2.set_ylim(0, 100)
+        # Fill between median and 95th
+        ax.fill_between(rates, tracking_median, tracking_p95, color="gray", alpha=0.15)
 
         # Mark optimal
         opt_idx = list(rates).index(optimal_rate)
         ax.axvline(x=optimal_rate, color="red", linestyle=":", alpha=0.7, linewidth=2)
-        ax.plot(optimal_rate, tracking_rms[opt_idx], "r*", markersize=20, zorder=10)
+        ax.plot(optimal_rate, tracking_median[opt_idx], "r*", markersize=20, zorder=10)
 
         ax.set_xlabel("Max Rate (C/h)")
-        ax.set_title(f"{scenario.name}\n" + r"$\tau_{grad}$" + f"={scenario.tau_gradient}h, " + r"$\theta$" + f"={scenario.gradient_threshold}C", fontsize=11, fontweight="bold")
+        ax.set_ylabel("Tracking Error (C)")
+        ax.set_title(
+            f"{scenario.name}\n"
+            + r"$\tau_{grad}$"
+            + f"={scenario.tau_gradient}h, "
+            + r"$\theta$"
+            + f"={scenario.gradient_threshold}C",
+            fontsize=11,
+            fontweight="bold",
+        )
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.4, 2.1)
+        ax.set_ylim(0, None)
+        ax.legend(loc="upper right", fontsize=9)
 
-        if col == 0:
-            lines = [line1, line2]
-            labels = [l.get_label() for l in lines]
-            ax.legend(lines, labels, loc="upper right", fontsize=9)
-
-        # Bottom row: Gradient penalty
+        # Bottom row: Gradient percentiles (like tracking panel)
         ax = axes[1, col]
-        ax2 = ax.twinx()
 
-        # Plot peak gradient on left axis
-        line1, = ax.plot(rates, peak_grad, "o-", color="tab:purple", linewidth=2, markersize=8, label="Peak Gradient")
-        ax.fill_between(rates, peak_grad - peak_grad_std, peak_grad + peak_grad_std, color="tab:purple", alpha=0.2)
-        ax.axhline(y=scenario.gradient_threshold, color="tab:purple", linestyle="--", alpha=0.5, label="Threshold")
-        ax.set_ylabel("Peak Gradient (C)", color="tab:purple")
-        ax.tick_params(axis="y", labelcolor="tab:purple")
+        # Plot median, 68th, 95th percentile gradients
+        ax.plot(
+            rates,
+            grad_median,
+            "o-",
+            color="tab:green",
+            linewidth=2,
+            markersize=8,
+            label="Median",
+        )
+        ax.plot(
+            rates,
+            grad_p68,
+            "s--",
+            color="tab:blue",
+            linewidth=2,
+            markersize=7,
+            label="68th %ile",
+        )
+        ax.plot(
+            rates,
+            grad_p95,
+            "^:",
+            color="tab:red",
+            linewidth=2,
+            markersize=7,
+            label="95th %ile",
+        )
 
-        # Plot accumulated penalty on right axis
-        line2, = ax2.plot(rates, accumulated, "s--", color="tab:red", linewidth=2, markersize=6, label="Accumulated Penalty")
-        ax2.set_ylabel("Accumulated Penalty (C^2*h)", color="tab:red")
-        ax2.tick_params(axis="y", labelcolor="tab:red")
+        # Fill between median and 95th
+        ax.fill_between(rates, grad_median, grad_p95, color="gray", alpha=0.15)
+
+        # Add threshold reference lines for gradient
+        ax.axhline(
+            y=0.5,
+            color="orange",
+            linestyle="--",
+            alpha=0.7,
+            linewidth=1.5,
+        )
+        ax.axhline(
+            y=1.0,
+            color="red",
+            linestyle="--",
+            alpha=0.5,
+            linewidth=1.5,
+        )
 
         # Mark optimal
         ax.axvline(x=optimal_rate, color="red", linestyle=":", alpha=0.7, linewidth=2)
-        ax.plot(optimal_rate, peak_grad[opt_idx], "r*", markersize=20, zorder=10)
+        opt_grad = grad_median[opt_idx]
+        ax.plot(optimal_rate, opt_grad, "r*", markersize=20, zorder=10)
 
         ax.set_xlabel("Max Rate (C/h)")
-        ax.set_title(f"Gradient Penalty (weight={scenario.penalty_weight})", fontsize=11)
+        ax.set_ylabel("Internal Gradient (°C)")
+        ax.set_title(
+            f"Gradient Percentiles (weight={scenario.penalty_weight})", fontsize=11
+        )
         ax.grid(True, alpha=0.3)
         ax.set_xlim(0.4, 2.1)
-
-        if col == 0:
-            lines = [line1, line2]
-            labels = [l.get_label() for l in lines]
-            ax.legend(lines, labels, loc="upper left", fontsize=9)
+        ax.set_ylim(0, None)
+        ax.legend(loc="upper left", fontsize=9)
 
     plt.suptitle(
-        "Gradient Penalty Scenarios: Tracking vs. Gradient Tradeoff\n"
+        "Gradient Penalty Scenarios: Tracking Percentiles & Thresholds\n"
         "Red star = optimal max_rate for each scenario",
-        fontsize=14, fontweight="bold"
+        fontsize=14,
+        fontweight="bold",
     )
     plt.tight_layout()
-    plt.savefig(figures_path / "gradient_scenarios_results.png", dpi=150, bbox_inches="tight")
+    plt.savefig(
+        figures_path / "gradient_scenarios_results.png", dpi=150, bbox_inches="tight"
+    )
     print(f"\nSaved: {figures_path / 'gradient_scenarios_results.png'}")
     plt.close()
 
 
-def create_combined_objective_figure(all_results: Dict[str, dict], figures_path: Path) -> None:
+def create_combined_objective_figure(
+    all_results: Dict[str, dict], figures_path: Path
+) -> None:
     """Create a figure showing the combined objective for all scenarios."""
     fig, ax = plt.subplots(1, 1, figsize=(10, 6))
 
@@ -529,22 +656,50 @@ def create_combined_objective_figure(all_results: Dict[str, dict], figures_path:
         combined = np.array([results[r]["combined_mean"] for r in rates])
         combined_std = np.array([results[r]["combined_std"] for r in rates])
 
-        ax.plot(rates, combined, "o-", color=scenario.color, linewidth=2.5, markersize=10, label=scenario.name)
-        ax.fill_between(rates, combined - combined_std, combined + combined_std, color=scenario.color, alpha=0.15)
+        ax.plot(
+            rates,
+            combined,
+            "o-",
+            color=scenario.color,
+            linewidth=2.5,
+            markersize=10,
+            label=scenario.name,
+        )
+        ax.fill_between(
+            rates,
+            combined - combined_std,
+            combined + combined_std,
+            color=scenario.color,
+            alpha=0.15,
+        )
 
         # Mark optimal
         opt_idx = list(rates).index(optimal_rate)
-        ax.plot(optimal_rate, combined[opt_idx], "*", color=scenario.color, markersize=25, markeredgecolor="black", markeredgewidth=1.5)
+        ax.plot(
+            optimal_rate,
+            combined[opt_idx],
+            "*",
+            color=scenario.color,
+            markersize=25,
+            markeredgecolor="black",
+            markeredgewidth=1.5,
+        )
 
     ax.set_xlabel("Max Rate (C/h)", fontsize=12)
     ax.set_ylabel("Combined Objective (lower is better)", fontsize=12)
-    ax.set_title("Combined Objective: Tracking RMS + Weighted Gradient Penalty", fontsize=13, fontweight="bold")
+    ax.set_title(
+        "Combined Objective: Tracking RMS + Weighted Gradient Penalty",
+        fontsize=13,
+        fontweight="bold",
+    )
     ax.legend(loc="upper right", fontsize=10)
     ax.grid(True, alpha=0.3)
     ax.set_xlim(0.4, 2.1)
 
     plt.tight_layout()
-    plt.savefig(figures_path / "gradient_scenarios_combined.png", dpi=150, bbox_inches="tight")
+    plt.savefig(
+        figures_path / "gradient_scenarios_combined.png", dpi=150, bbox_inches="tight"
+    )
     print(f"Saved: {figures_path / 'gradient_scenarios_combined.png'}")
     plt.close()
 
@@ -601,9 +756,16 @@ def main():
         opt_metrics = results[optimal_rate]
         print(f"\n{scenario.name}:")
         print(f"  Optimal rate: {optimal_rate:.2f} C/h")
-        print(f"  Tracking RMS: {opt_metrics['tracking_rms_mean']:.3f}C")
-        print(f"  Within +/-0.3C: {opt_metrics['within_03_mean']:.1f}%")
-        print(f"  Peak gradient: {opt_metrics['peak_gradient_mean']:.3f}C")
+        print(
+            f"  Tracking: median={opt_metrics['tracking_median_mean']:.3f}C, "
+            f"68%ile={opt_metrics['tracking_p68_mean']:.3f}C, "
+            f"95%ile={opt_metrics['tracking_p95_mean']:.3f}C"
+        )
+        print(
+            f"  Thresholds: {opt_metrics['within_05_mean']:.1f}% <0.5C, "
+            f"{opt_metrics['within_10_mean']:.1f}% <1.0C"
+        )
+        print(f"  Gradient 95th %ile: {opt_metrics['gradient_p95_mean']:.3f}C")
 
 
 if __name__ == "__main__":

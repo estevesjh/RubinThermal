@@ -18,6 +18,7 @@ two-zone model captures the dominant first-order behavior.
 
 from dataclasses import dataclass, field
 from typing import Optional
+
 import numpy as np
 
 from .config import CONFIG
@@ -94,11 +95,12 @@ class TwoZoneThermalModel:
 
     # Model parameters (with defaults from config)
     tau_bulk: float = None
-    tau_surface: float = 1.0
-    tau_gradient: float = 2.5
+    tau_surface: float = 1.0  # Fast surface response with active cooling (was 1.0)
+    tau_gradient: float = 3.0
     max_rate: float = None
     dt: float = None
     cold_bias: float = None
+    rate_gradient_coupling: float = 0.3  # Gradient scales with rate: grad += k * rate
 
     # State variables (initialized in __post_init__)
     T_surface: float = field(default=None, init=False)
@@ -159,7 +161,9 @@ class TwoZoneThermalModel:
         self.rate_history = []
         self._initialized = False
 
-    def step(self, T_setpoint: float, apply_rate_limit: bool = True) -> tuple[float, float, float]:
+    def step(
+        self, T_setpoint: float, apply_rate_limit: bool = True
+    ) -> tuple[float, float, float]:
         """
         Advance model by one timestep.
 
@@ -207,13 +211,19 @@ class TwoZoneThermalModel:
         T_bulk_new = self.T_bulk + dT_bulk
 
         # Update gradient with relaxation dynamics
-        # Gradient naturally equals (T_surface - T_bulk), but relaxes over tau_gradient
+        # Gradient has two components:
+        # 1. Equilibrium gradient from surface-bulk difference
+        # 2. Rate-dependent gradient from rapid setpoint changes (active cooling effect)
         gradient_equilibrium = T_surface_new - T_bulk_new
-        dGradient = (gradient_equilibrium - self.gradient) / self.tau_gradient * self.dt
+        rate_gradient = self.rate_gradient_coupling * abs(
+            setpoint_rate
+        )  # Rate-dependent term
+        gradient_target = gradient_equilibrium + np.sign(setpoint_rate) * rate_gradient
+        dGradient = (gradient_target - self.gradient) / self.tau_gradient * self.dt
         gradient_new = self.gradient + dGradient
 
         # Accumulate gradient damage metric (integral of gradient^2)
-        self.gradient_integral += self.gradient ** 2 * self.dt
+        self.gradient_integral += self.gradient**2 * self.dt
 
         # Update state
         self.T_surface = T_surface_new
@@ -404,7 +414,7 @@ def simulate_with_gradient_model(
     setpoints: np.ndarray,
     T_initial: float,
     model: Optional[TwoZoneThermalModel] = None,
-    **model_kwargs
+    **model_kwargs,
 ) -> dict:
     """
     Run a complete simulation with the two-zone gradient model.
@@ -443,7 +453,7 @@ def simulate_with_gradient_model(
     # Interpolate setpoints to model timestep if needed
     dt = model.dt
     t_start, t_end = hours[0], hours[-1]
-    sim_times = np.arange(t_start, t_end + dt/2, dt)
+    sim_times = np.arange(t_start, t_end + dt / 2, dt)
     sim_setpoints = np.interp(sim_times, hours, setpoints)
 
     # Allocate output arrays
@@ -484,7 +494,7 @@ def compare_gradient_impact(
     setpoints_fast: np.ndarray,
     setpoints_slow: np.ndarray,
     T_initial: float,
-    **model_kwargs
+    **model_kwargs,
 ) -> dict:
     """
     Compare gradient impact of two different setpoint strategies.

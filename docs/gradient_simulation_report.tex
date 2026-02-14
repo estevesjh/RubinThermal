@@ -192,7 +192,7 @@ Figure~\ref{fig:scenarios_results} illustrates the tradeoff between tracking per
 \begin{figure}[H]
 \centering
 \includegraphics[width=\textwidth]{../figures/gradient_scenarios_results.png}
-\caption{Tracking performance (top row) and gradient penalties (bottom row) for three operational scenarios: Conservative (honeycomb-safe), Moderate (balanced), and Aggressive (performance-focused). Red stars indicate optimal rate for each scenario. The shaded regions represent the interquartile range across 392 test nights.}
+\caption{Tracking error percentiles (top row) and internal gradient 95th percentile (bottom row) for three operational scenarios: Conservative (honeycomb-safe, weight=5.0), Moderate (balanced, weight=1.0), and Aggressive (performance-focused, weight=0.2). Red stars indicate optimal rate for each scenario. All percentiles are computed globally over all data points from 392 test nights combined. Purple shaded regions show $\pm 1\sigma$ variability. Horizontal dashed lines mark \SI{0.5}{\celsius} and \SI{1.0}{\celsius} gradient thresholds.}
 \label{fig:scenarios_results}
 \end{figure}
 
@@ -233,34 +233,36 @@ Table~\ref{tab:tracking_thresholds} shows the percentage of overnight operation 
 
 \begin{table}[H]
 \centering
-\caption{Tracking error compliance: percentage of time below temperature thresholds}
+\caption{Tracking error compliance: global percentiles computed over all 392 nights combined}
 \label{tab:tracking_thresholds}
-\begin{tabular}{@{}S[table-format=1.2]S[table-format=1.2]S[table-format=2.1]S[table-format=2.1]S[table-format=2.1]S[table-format=1.2]@{}}
+\begin{tabular}{@{}S[table-format=1.2]S[table-format=1.3]S[table-format=1.3]S[table-format=1.3]S[table-format=2.1]S[table-format=2.1]S[table-format=1.3]@{}}
 \toprule
-{Max Rate} & {RMS} & \multicolumn{3}{c}{Tracking Error Below Threshold} & {Gradient} \\
-\cmidrule(lr){3-5}
-{(\si{\celsius/h})} & {(\si{\celsius})} & {\% $<$\SI{0.3}{\celsius}} & {\% $<$\SI{0.5}{\celsius}} & {\% $<$\SI{1.0}{\celsius}} & {95th \%ile (\si{\celsius})} \\
+{Max Rate} & \multicolumn{3}{c}{Tracking Error Percentiles} & \multicolumn{2}{c}{Below Threshold} & {Gradient} \\
+\cmidrule(lr){2-4} \cmidrule(lr){5-6}
+{(\si{\celsius/h})} & {Median (\si{\celsius})} & {68\%ile (\si{\celsius})} & {95\%ile (\si{\celsius})} & {\% $<$\SI{0.5}{\celsius}} & {\% $<$\SI{1.0}{\celsius}} & {95th \%ile (\si{\celsius})} \\
 \midrule
-0.30 & 0.93 & 38.2 & 53.1 & 77.7 & 0.67 \\
-0.50 & 0.62 & 55.1 & 71.6 & 90.7 & 0.90 \\
-\rowcolor{yellow!20} 0.70 & 0.49 & 63.7 & 81.4 & 95.2 & 0.95 \\
-1.00 & 0.40 & 68.7 & 87.3 & 97.4 & 0.97 \\
-1.25 & 0.36 & 70.2 & 89.2 & 98.1 & 0.97 \\
-1.50 & 0.34 & 70.7 & 90.1 & 98.5 & 0.98 \\
-2.00 & 0.32 & 71.1 & 90.8 & 98.9 & 0.98 \\
+0.30 & 0.260 & 0.500 & 1.631 & 68.0 & 86.1 & 0.821 \\
+0.40 & 0.202 & 0.335 & 1.213 & 78.9 & 92.5 & 0.997 \\
+0.50 & 0.188 & 0.287 & 0.945 & 86.1 & 95.5 & 1.117 \\
+0.60 & 0.192 & 0.286 & 0.755 & 89.2 & 97.2 & 1.193 \\
+\rowcolor{yellow!20} 0.70 & 0.206 & 0.299 & 0.663 & 89.3 & 98.2 & 1.241 \\
+1.00 & 0.248 & 0.357 & 0.698 & 84.0 & 99.1 & 1.310 \\
+1.25 & 0.274 & 0.396 & 0.761 & 79.8 & 98.9 & 1.333 \\
+1.50 & 0.298 & 0.429 & 0.822 & 75.8 & 98.4 & 1.349 \\
+2.00 & 0.325 & 0.472 & 0.916 & 70.8 & 96.7 & 1.368 \\
 \bottomrule
 \end{tabular}
 \vspace{0.5em}
 
-\footnotesize\textit{Note: Highlighted row indicates current operating point (\SI{0.7}{\celsius/h}). Gradient 95th percentile shown for $\tau_{\text{gradient}} = \SI{3.0}{h}$.}
+\footnotesize\textit{Note: Highlighted row indicates current operating point (\SI{0.7}{\celsius/h}). Percentiles are computed globally over all data points from all nights combined ($\sim$15,000 samples). Best tracking median occurs at 0.5--0.6 C/h; gradient 95th percentile exceeds \SI{1.0}{\celsius} for all rates.}
 \end{table}
 
 \textbf{Key findings from tracking threshold analysis:}
 \begin{itemize}
-    \item At \SI{0.7}{\celsius/h}: Tracking error stays below \SI{0.5}{\celsius} for \textbf{81.4\%} of the time, and below \SI{1.0}{\celsius} for \textbf{95.2\%} of the time
-    \item Increasing to \SI{1.0}{\celsius/h} improves $<$\SI{0.5}{\celsius} compliance from 81\% to 87\%, with 95th percentile gradient increasing only slightly from 0.95 to \SI{0.97}{\celsius}
-    \item At \SI{0.3}{\celsius/h}: Only 53\% of time below \SI{0.5}{\celsius} and 78\% below \SI{1.0}{\celsius} --- significant tracking degradation
-    \item \textcolor{safegreen}{The 95th percentile gradient stays below \SI{1.0}{\celsius} for all rate configurations, indicating typical operation is within safety limits}
+    \item At \SI{0.7}{\celsius/h}: Tracking error stays below \SI{0.5}{\celsius} for \textbf{89.3\%} of the time, and below \SI{1.0}{\celsius} for \textbf{98.2\%} of the time
+    \item Best tracking median (\SI{0.188}{\celsius}) occurs at \SI{0.5}{\celsius/h}; slower rates have worse tracking due to lag, faster rates degrade due to overshoot
+    \item At \SI{0.3}{\celsius/h}: Only 68\% of time below \SI{0.5}{\celsius} and 86\% below \SI{1.0}{\celsius} --- significant tracking degradation
+    \item \textcolor{warningorange}{The 95th percentile gradient exceeds \SI{1.0}{\celsius} for all rate configurations when computed globally over 392 nights, indicating the worst 5\% of operating moments approach or exceed gradient safety limits}
 \end{itemize}
 
 \subsection{Worst-Case Analysis}
@@ -324,18 +326,18 @@ We evaluated three operational scenarios representing different risk tolerances:
 \centering
 \caption{Three operational scenarios and optimal rate selection}
 \label{tab:scenarios}
-\begin{tabular}{@{}llccc@{}}
+\begin{tabular}{@{}llcccc@{}}
 \toprule
-Scenario & Description & $\tau_{\text{grad}}$ & Penalty Weight & Optimal Rate \\
+Scenario & Description & $\tau_{\text{grad}}$ & Threshold & Penalty Weight & Optimal Rate \\
 \midrule
-Conservative & Honeycomb-safe, worst-case & \SI{3.0}{h} & 2.0 & \SI{0.50}{\celsius/h} \\
-Moderate & Balanced tradeoff & \SI{2.5}{h} & 1.0 & \SI{0.75}{\celsius/h} \\
-Aggressive & Performance-focused & \SI{2.0}{h} & 0.5 & \SI{0.75}{\celsius/h}--\SI{1.0}{\celsius/h} \\
+Conservative & Honeycomb-safe, worst-case & \SI{3.0}{h} & \SI{0.3}{\celsius} & 5.0 & \SI{0.40}{\celsius/h} \\
+Moderate & Balanced tradeoff & \SI{3.0}{h} & \SI{0.5}{\celsius} & 1.0 & \SI{0.60}{\celsius/h} \\
+Aggressive & Performance-focused & \SI{3.0}{h} & \SI{0.8}{\celsius} & 0.2 & \SI{0.70}{\celsius/h} \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\textbf{Key finding}: The current operating point of \SI{0.7}{\celsius/h} is validated as near-optimal for the moderate scenario, confirming it represents a reasonable engineering tradeoff.
+\textbf{Key finding}: The current operating point of \SI{0.7}{\celsius/h} aligns with the Aggressive scenario optimal. For more conservative operation, reducing to \SI{0.6}{\celsius/h} (Moderate) or \SI{0.4}{\celsius/h} (Conservative) would lower gradient risk while maintaining good tracking performance.
 
 Figure~\ref{fig:combined_objective} shows the combined objective function (tracking RMS + weighted gradient penalty) for each scenario. The optimal rate is marked with a star.
 
