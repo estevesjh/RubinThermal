@@ -3,6 +3,7 @@
 Generate performance histograms and nightly simulation plots for three-phase control.
 """
 
+import argparse
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
@@ -23,12 +24,23 @@ from rubin_thermal import (
     compute_rate,
     make_linear_kernel,
     ThermalModel,
+    create_provider,
 )
 from rubin_thermal.config import get_figures_path
 
 
-def simulate_three_phase(day, model):
-    """Simulate with optimal three-phase control."""
+def simulate_three_phase(day, model, forecast_provider=None):
+    """Simulate with optimal three-phase control.
+
+    Parameters
+    ----------
+    day : dict
+        Day data dictionary
+    model : ThermalModel
+        Thermal model instance
+    forecast_provider : TemperatureProvider, optional
+        Provider for future temperatures. If None, uses perfect knowledge.
+    """
     T1 = CONFIG["control"]["t1"]
     T2 = CONFIG["control"]["t2"]
 
@@ -50,7 +62,15 @@ def simulate_three_phase(day, model):
         t = t_sim[i]
         T_amb = temps[i]
         T_ambient[i] = T_amb
-        rate = compute_rate(hours, temps, t, 1.0)
+
+        # Use forecast provider for rate if available
+        if forecast_provider is not None:
+            rate = compute_rate(hours, temps, t, 1.0, forecast_provider, t)
+            # Add rate noise if provider supports it
+            if hasattr(forecast_provider, 'get_rate_noise'):
+                rate += forecast_provider.get_rate_noise(t, t, hours, temps)
+        else:
+            rate = compute_rate(hours, temps, t, 1.0)
 
         if t < T1:
             T_setpoint[i] = T_sunset - model.cold_bias
@@ -63,10 +83,16 @@ def simulate_three_phase(day, model):
             phase[i] = 2
         else:
             weights, times = make_linear_kernel()
-            weighted_temp = sum(
-                w * interpolate_temp(hours, temps, t + dt)
-                for w, dt in zip(weights, times)
-            )
+            if forecast_provider is not None:
+                weighted_temp = sum(
+                    w * forecast_provider.get_temperature(t + dt, t, hours, temps)
+                    for w, dt in zip(weights, times)
+                )
+            else:
+                weighted_temp = sum(
+                    w * interpolate_temp(hours, temps, t + dt)
+                    for w, dt in zip(weights, times)
+                )
             T_setpoint[i] = weighted_temp + 0.5 * model.tau * rate - model.cold_bias
             phase[i] = 3
 
@@ -91,13 +117,62 @@ def simulate_three_phase(day, model):
     }
 
 
+def parse_args():
+    """Parse command line arguments."""
+    parser = argparse.ArgumentParser(
+        description="Generate performance plots for three-phase thermal control"
+    )
+    parser.add_argument(
+        "--forecast-mode",
+        choices=["perfect", "persistence", "noisy", "twilight"],
+        default="perfect",
+        help="Temperature forecast mode (default: perfect)",
+    )
+    parser.add_argument(
+        "--model-path",
+        type=str,
+        default=None,
+        help="Path to forecast model (required for twilight mode)",
+    )
+    parser.add_argument(
+        "--seed",
+        type=int,
+        default=42,
+        help="Random seed for noisy mode (default: 42)",
+    )
+    parser.add_argument(
+        "--rate-noise",
+        type=float,
+        default=0.0,
+        help="Rate noise std dev in C/hour for noisy mode (default: 0.0)",
+    )
+    return parser.parse_args()
+
+
 def main():
+    args = parse_args()
+
     model = ThermalModel()
     figures_path = get_figures_path()
     figures_path.mkdir(exist_ok=True)
 
     T1 = CONFIG["control"]["t1"]
     T2 = CONFIG["control"]["t2"]
+
+    # Set up forecast provider
+    forecast_mode = args.forecast_mode
+    model_path = args.model_path or CONFIG.get("forecast", {}).get("model_path")
+
+    if forecast_mode == "twilight" and model_path is None:
+        print("ERROR: --model-path required for twilight mode")
+        sys.exit(1)
+
+    print(f"Forecast mode: {forecast_mode}")
+    if args.rate_noise > 0:
+        print(f"Rate noise: {args.rate_noise} C/hour")
+    forecast_provider = create_provider(
+        forecast_mode, model_path, seed=args.seed, rate_noise_std=args.rate_noise
+    )
 
     # Load data
     print("Loading data...")
@@ -115,7 +190,7 @@ def main():
     sunset_errors = []
 
     for day in test_days:
-        result = simulate_three_phase(day, model)
+        result = simulate_three_phase(day, model, forecast_provider)
         all_results.append(result)
         sunset_errors.append(result["error_at_sunset"])
 
@@ -131,7 +206,10 @@ def main():
     # Filename prefix based on parameters
     rate_str = str(model.max_rate).replace(".", "")
     tau_str = str(int(model.tau))
-    filename_prefix = f"three_phase_{rate_str}rate_{tau_str}tau"
+    if forecast_mode == "perfect":
+        filename_prefix = f"three_phase_{rate_str}rate_{tau_str}tau"
+    else:
+        filename_prefix = f"three_phase_{rate_str}rate_{tau_str}tau_{forecast_mode}"
 
     # Figure 1: Performance Histograms
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -216,6 +294,7 @@ Configuration:
   Phase 2 (Pre-sunset):  {T1}h to {T2}h   Ramp to tracking
   Phase 3 (Overnight):   t >= {T2}h    Weighted lookahead + rate
 
+Forecast Mode: {forecast_mode}
 Test Set: {len(test_days)} nights
 
 SUNSET PERFORMANCE (t = 0):
@@ -384,6 +463,7 @@ PERCENTILES (overnight):
     print("\n" + "=" * 60)
     print("SUMMARY")
     print("=" * 60)
+    print(f"Forecast mode: {forecast_mode}")
     print(f"Total nights: {len(test_days)}")
     print(f"Total overnight samples: {len(all_overnight_errors)}")
     print(f"\nSunset error: {mean_sunset:+.3f} +/- {np.std(sunset_errors):.3f}C")

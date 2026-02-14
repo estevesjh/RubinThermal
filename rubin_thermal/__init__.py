@@ -29,6 +29,20 @@ from .sun import (
     get_sun_times_for_date,
     build_sun_events,
 )
+from .forecast import (
+    TemperatureProvider,
+    PerfectKnowledgeProvider,
+    PersistenceProvider,
+    NoisyForecastProvider,
+    TwilightForecastProvider,
+    ForecastProvider,  # Alias for NoisyForecastProvider
+    create_provider,
+)
+from .gradient_model import (
+    TwoZoneThermalModel,
+    simulate_with_gradient_model,
+    compare_gradient_impact,
+)
 
 __version__ = "1.0.0"
 __all__ = [
@@ -60,4 +74,16 @@ __all__ = [
     "get_sunrise_utc",
     "get_sun_times_for_date",
     "build_sun_events",
+    # Forecast
+    "TemperatureProvider",
+    "PerfectKnowledgeProvider",
+    "PersistenceProvider",
+    "NoisyForecastProvider",
+    "TwilightForecastProvider",
+    "ForecastProvider",
+    "create_provider",
+    # Gradient model
+    "TwoZoneThermalModel",
+    "simulate_with_gradient_model",
+    "compare_gradient_impact",
 ]

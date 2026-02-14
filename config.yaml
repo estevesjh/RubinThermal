@@ -25,3 +25,9 @@ location:
 paths:
   data: "data/temp_history_all_dec2025_sunrise_sunset.csv"
   figures: "figures"
+
+# Forecast configuration
+forecast:
+  enabled: false                                      # Toggle forecast mode
+  model_path: "../rubin-twilight-forecast/results/model"  # Path to forecast model
+  lead_hours: 3                                       # Maximum forecast lead time (hours)

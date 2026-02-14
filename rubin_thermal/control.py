@@ -6,10 +6,14 @@ Phase 2: PRE-SUNSET TRANSITION - Transition from fixed to tracking
 Phase 3: OVERNIGHT - Lookahead tracking with rate compensation
 """
 
+from typing import TYPE_CHECKING
 import numpy as np
 
 from .config import CONFIG
 from .physics import interpolate_temp, compute_rate, make_linear_kernel
+
+if TYPE_CHECKING:
+    from .forecast import TemperatureProvider
 
 
 def phase1_fixed(
@@ -180,6 +184,8 @@ def phase2_lookahead_ramp(
     T2: float,
     tau: float | None = None,
     cold_bias: float | None = None,
+    forecast_provider: "TemperatureProvider | None" = None,
+    t_origin: float | None = None,
 ) -> float:
     """
     Phase 2: Gradually introduce lookahead from simple to weighted.
@@ -187,6 +193,10 @@ def phase2_lookahead_ramp(
     Parameters
     ----------
     (same as phase2_ramp)
+    forecast_provider : TemperatureProvider, optional
+        Provider for future temperature values. If None, uses actual data.
+    t_origin : float, optional
+        Time origin for forecasts. Required if forecast_provider is set.
 
     Returns
     -------
@@ -202,9 +212,16 @@ def phase2_lookahead_ramp(
     simple = T_amb - cold_bias + 0.5 * tau * rate
 
     weights, times = make_linear_kernel()
-    weighted_temp = sum(
-        w * interpolate_temp(hours, temps, t + dt) for w, dt in zip(weights, times)
-    )
+
+    if forecast_provider is not None and t_origin is not None:
+        weighted_temp = sum(
+            w * forecast_provider.get_temperature(t + dt, t_origin, hours, temps)
+            for w, dt in zip(weights, times)
+        )
+    else:
+        weighted_temp = sum(
+            w * interpolate_temp(hours, temps, t + dt) for w, dt in zip(weights, times)
+        )
     lookahead = weighted_temp + 0.5 * tau * rate - cold_bias
 
     return (1 - alpha) * simple + alpha * lookahead
@@ -219,6 +236,8 @@ def phase3_lookahead(
     temps: np.ndarray,
     tau: float | None = None,
     cold_bias: float | None = None,
+    forecast_provider: "TemperatureProvider | None" = None,
+    t_origin: float | None = None,
 ) -> float:
     """
     Phase 3: Linear weighted lookahead with rate compensation.
@@ -244,6 +263,10 @@ def phase3_lookahead(
         Thermal time constant. Defaults to config value.
     cold_bias : float, optional
         Cold bias offset. Defaults to config value.
+    forecast_provider : TemperatureProvider, optional
+        Provider for future temperature values. If None, uses actual data.
+    t_origin : float, optional
+        Time origin for forecasts. Required if forecast_provider is set.
 
     Returns
     -------
@@ -256,9 +279,16 @@ def phase3_lookahead(
         cold_bias = CONFIG["physics"]["cold_bias"]
 
     weights, times = make_linear_kernel()
-    weighted_temp = sum(
-        w * interpolate_temp(hours, temps, t + dt) for w, dt in zip(weights, times)
-    )
+
+    if forecast_provider is not None and t_origin is not None:
+        weighted_temp = sum(
+            w * forecast_provider.get_temperature(t + dt, t_origin, hours, temps)
+            for w, dt in zip(weights, times)
+        )
+    else:
+        weighted_temp = sum(
+            w * interpolate_temp(hours, temps, t + dt) for w, dt in zip(weights, times)
+        )
     return weighted_temp + 0.5 * tau * rate - cold_bias
 
 
@@ -273,6 +303,8 @@ def three_phase_setpoint(
     T2: float | None = None,
     tau: float | None = None,
     cold_bias: float | None = None,
+    forecast_provider: "TemperatureProvider | None" = None,
+    t_origin: float | None = None,
 ) -> tuple[float, int]:
     """
     Compute setpoint using optimal three-phase control.
@@ -299,6 +331,10 @@ def three_phase_setpoint(
         Thermal time constant. Defaults to config.
     cold_bias : float, optional
         Cold bias offset. Defaults to config.
+    forecast_provider : TemperatureProvider, optional
+        Provider for future temperature values. If None, uses actual data.
+    t_origin : float, optional
+        Time origin for forecasts. Required if forecast_provider is set.
 
     Returns
     -------
@@ -328,7 +364,8 @@ def three_phase_setpoint(
     else:
         # Phase 3: Overnight lookahead
         setpoint = phase3_lookahead(
-            t, T_amb, T_sunset, rate, hours, temps, tau, cold_bias
+            t, T_amb, T_sunset, rate, hours, temps, tau, cold_bias,
+            forecast_provider, t_origin
         )
         phase = 3
 

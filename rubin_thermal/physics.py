@@ -5,10 +5,14 @@ Consolidates thermal dynamics, interpolation, and rate computation
 that was previously duplicated across scripts.
 """
 
+from typing import TYPE_CHECKING
 import numpy as np
 from dataclasses import dataclass
 
 from .config import CONFIG
+
+if TYPE_CHECKING:
+    from .forecast import TemperatureProvider
 
 
 def interpolate_temp(hours: np.ndarray, temps: np.ndarray, t: float) -> float:
@@ -39,7 +43,12 @@ def interpolate_temp(hours: np.ndarray, temps: np.ndarray, t: float) -> float:
 
 
 def compute_rate(
-    hours: np.ndarray, temps: np.ndarray, t: float, window: float = 1.0
+    hours: np.ndarray,
+    temps: np.ndarray,
+    t: float,
+    window: float = 1.0,
+    forecast_provider: "TemperatureProvider | None" = None,
+    t_origin: float | None = None,
 ) -> float:
     """
     Compute temperature rate of change at time t.
@@ -56,6 +65,10 @@ def compute_rate(
         Time at which to compute rate
     window : float
         Window size in hours for rate computation
+    forecast_provider : TemperatureProvider, optional
+        Provider for future temperature values. If None, uses actual data.
+    t_origin : float, optional
+        Time origin for forecasts. Required if forecast_provider is set.
 
     Returns
     -------
@@ -66,8 +79,13 @@ def compute_rate(
     t_after = min(t + window / 2, hours[-1])
     if t_after <= t_before:
         return 0.0
-    T_before = interpolate_temp(hours, temps, t_before)
-    T_after = interpolate_temp(hours, temps, t_after)
+
+    if forecast_provider is not None and t_origin is not None:
+        T_before = forecast_provider.get_temperature(t_before, t_origin, hours, temps)
+        T_after = forecast_provider.get_temperature(t_after, t_origin, hours, temps)
+    else:
+        T_before = interpolate_temp(hours, temps, t_before)
+        T_after = interpolate_temp(hours, temps, t_after)
     return (T_after - T_before) / (t_after - t_before)
 
 
