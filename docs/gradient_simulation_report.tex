@@ -241,15 +241,15 @@ Table~\ref{tab:tracking_thresholds} shows the percentage of overnight operation 
 \cmidrule(lr){2-4} \cmidrule(lr){5-6}
 {(\si{\celsius/h})} & {Median (\si{\celsius})} & {68\%ile (\si{\celsius})} & {95\%ile (\si{\celsius})} & {\% $<$\SI{0.5}{\celsius}} & {\% $<$\SI{1.0}{\celsius}} & {95th \%ile (\si{\celsius})} \\
 \midrule
-0.30 & 0.260 & 0.500 & 1.631 & 68.0 & 86.1 & 0.821 \\
-0.40 & 0.202 & 0.335 & 1.213 & 78.9 & 92.5 & 0.997 \\
-0.50 & 0.188 & 0.287 & 0.945 & 86.1 & 95.5 & 1.117 \\
-0.60 & 0.192 & 0.286 & 0.755 & 89.2 & 97.2 & 1.193 \\
-\rowcolor{yellow!20} 0.70 & 0.206 & 0.299 & 0.663 & 89.3 & 98.2 & 1.241 \\
-1.00 & 0.248 & 0.357 & 0.698 & 84.0 & 99.1 & 1.310 \\
-1.25 & 0.274 & 0.396 & 0.761 & 79.8 & 98.9 & 1.333 \\
-1.50 & 0.298 & 0.429 & 0.822 & 75.8 & 98.4 & 1.349 \\
-2.00 & 0.325 & 0.472 & 0.916 & 70.8 & 96.7 & 1.368 \\
+0.30 & 0.260 & 0.500 & 1.631 & 68.0 & 86.1 & 0.767 \\
+0.40 & 0.202 & 0.335 & 1.213 & 78.9 & 92.5 & 0.933 \\
+0.50 & 0.188 & 0.287 & 0.945 & 86.1 & 95.5 & 1.045 \\
+0.60 & 0.192 & 0.286 & 0.755 & 89.2 & 97.2 & 1.116 \\
+\rowcolor{yellow!20} 0.70 & 0.206 & 0.299 & 0.663 & 89.3 & 98.2 & 1.162 \\
+1.00 & 0.248 & 0.357 & 0.698 & 84.0 & 99.1 & 1.225 \\
+1.25 & 0.274 & 0.396 & 0.761 & 79.8 & 98.9 & 1.247 \\
+1.50 & 0.298 & 0.429 & 0.822 & 75.8 & 98.4 & 1.262 \\
+2.00 & 0.325 & 0.472 & 0.916 & 70.8 & 96.7 & 1.277 \\
 \bottomrule
 \end{tabular}
 \vspace{0.5em}
@@ -330,7 +330,7 @@ We evaluated three operational scenarios representing different risk tolerances:
 \toprule
 Scenario & Description & $\tau_{\text{grad}}$ & Threshold & Penalty Weight & Optimal Rate \\
 \midrule
-Conservative & Honeycomb-safe, worst-case & \SI{3.0}{h} & \SI{0.3}{\celsius} & 5.0 & \SI{0.40}{\celsius/h} \\
+Conservative & Honeycomb-safe, worst-case & \SI{3.0}{h} & \SI{0.3}{\celsius} & 5.0 & \SI{0.50}{\celsius/h} \\
 Moderate & Balanced tradeoff & \SI{3.0}{h} & \SI{0.5}{\celsius} & 1.0 & \SI{0.60}{\celsius/h} \\
 Aggressive & Performance-focused & \SI{3.0}{h} & \SI{0.8}{\celsius} & 0.2 & \SI{0.70}{\celsius/h} \\
 \bottomrule
