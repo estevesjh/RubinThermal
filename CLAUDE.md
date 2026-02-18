@@ -203,3 +203,69 @@ See `requirements.txt`:
 - astropy (for sun position calculations)
 - pyyaml (for configuration)
 - pytest (for testing)
+
+## EFD Temperature Query Scripts
+
+Scripts for querying Rubin Observatory EFD (Engineering Facility Database) are in `/sdf/home/e/esteves/sitcom-analysis/queryTemps/`:
+
+### Available Scripts
+
+- `multi_sensor_query.py` -- Multi-sensor temperature query with mean/std aggregation
+- `find_observing_nights.py` -- Identify nights when dome was open (from MTDome.azimuth motion)
+- `query_observing_nights.py` -- Query all sensors for identified observing nights
+- `efd_temp_query.py` -- Original single-sensor query class
+- `helper.py` -- File handling and twilight time utilities
+
+### EFD Temperature Sensors
+
+| Sensor | Topic | salIndex | Column(s) |
+|--------|-------|----------|-----------|
+| Outside temp | `lsst.sal.ESS.temperature` | 301 | `temperatureItem0` |
+| Inside air (M2) | `lsst.sal.ESS.temperature` | 112 | `temperatureItem0` |
+| Inside air (M1M3) | `lsst.sal.ESS.temperature` | 113 | `temperatureItem0` |
+| Dome inside | `lsst.sal.ESS.temperature` | 111 | `temperatureItem0` |
+| Wind | `lsst.sal.ESS.airFlow` | 301 | `speed`, `direction`, `maxSpeed` |
+
+### M1M3 Thermal System (`lsst.sal.MTM1M3TS.glycolLoopTemperature`)
+
+No salIndex needed - dedicated topic with columns:
+- `aboveMirrorTemperature` -- Air above mirror
+- `insideCellTemperature1/2/3` -- Three sensors inside cell (different locations)
+- `mirrorCoolantSupplyTemperature` / `mirrorCoolantReturnTemperature`
+- `telescopeCoolantSupplyTemperature` / `telescopeCoolantReturnTemperature`
+
+### Dome Status
+
+Use `lsst.sal.MTDome.azimuth` with `positionActual` and `velocityActual` to detect dome motion (dome open when tracking).
+
+### Query Usage
+
+```bash
+# Explore available columns
+python multi_sensor_query.py --explore --start 2024-12-01 --end 2024-12-05
+
+# Query specific sensors
+python multi_sensor_query.py --query --start 2024-12-01 --end 2024-12-15 \
+    --sensors inside_air_m2 m1m3_glycol outside_temp
+
+# Find observing nights
+python find_observing_nights.py --start 2024-01-01 --output observing_nights.csv
+
+# Query all sensors for observing nights (1-min resolution, mean/std)
+python query_observing_nights.py --output-dir /sdf/data/rubin/user/esteves/thermal_analysis
+```
+
+### Pre-Built Dataset
+
+Thermal data for 295 observing nights (Feb 2024 - Feb 2026) at `/sdf/data/rubin/user/esteves/thermal_analysis/`:
+
+| File | Description |
+|------|-------------|
+| `observing_nights_2024.csv` | All nights with dome motion stats |
+| `observing_nights_2024_observing_only.csv` | 295 observing nights list |
+| `thermal_data_all_observing_nights.csv` | 247,512 rows, 1-min resolution, 29 columns |
+
+**Data coverage:**
+- Outside temp & wind: 99.9%
+- Inside temps (ESS 112, 113): ~86-88%
+- M1M3 glycol temps: 84.4% (from Oct 30, 2024 - 251 nights)
