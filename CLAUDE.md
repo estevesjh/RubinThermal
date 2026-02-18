@@ -257,7 +257,7 @@ python query_observing_nights.py --output-dir /sdf/data/rubin/user/esteves/therm
 
 ### Pre-Built Dataset
 
-Thermal data for 295 observing nights (Feb 2024 - Feb 2026) at `/sdf/data/rubin/user/esteves/thermal_analysis/`:
+Thermal data for 295 observing nights (Feb 2024 - Feb 2026) in `data/`:
 
 | File | Description |
 |------|-------------|
