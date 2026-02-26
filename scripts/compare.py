@@ -26,11 +26,12 @@ from rubin_thermal import (
     compute_rate,
     make_linear_kernel,
     ThermalModel,
+    NoisyForecastProvider,
 )
 from rubin_thermal.config import get_figures_path
 
 
-def simulate_control(day, strategy, model):
+def simulate_control(day, strategy, model, forecast_provider=None):
     """Simulate different control strategies."""
     T1 = CONFIG["control"]["t1"]
     T2 = CONFIG["control"]["t2"]
@@ -38,6 +39,12 @@ def simulate_control(day, strategy, model):
     hours = day["hours_from_sunset"]
     temps = day["temps"]
     T_sunset = day["T_sunset"]
+
+    # Get noisy forecast of sunset temperature for three_phase (3h lead time from T1)
+    if strategy == "three_phase" and forecast_provider is not None:
+        T_sunset_forecast = forecast_provider.get_temperature(0, T1, hours, temps)
+    else:
+        T_sunset_forecast = T_sunset
 
     t_sim = hours.copy()
     n = len(t_sim)
@@ -48,7 +55,7 @@ def simulate_control(day, strategy, model):
 
     # Initialize mirror
     if strategy == "three_phase":
-        T_mirror[0] = T_sunset - model.cold_bias
+        T_mirror[0] = T_sunset_forecast - model.cold_bias
     elif strategy == "match_ambient":
         T_mirror[0] = temps[0]
     else:  # ambient_minus_075
@@ -57,7 +64,12 @@ def simulate_control(day, strategy, model):
     for i in range(n):
         t = t_sim[i]
         T_amb = temps[i]
+
+        # Compute actual rate, then add noise for three_phase
         rate = compute_rate(hours, temps, t, 1.0)
+        if strategy == "three_phase" and forecast_provider is not None:
+            if hasattr(forecast_provider, 'get_rate_noise'):
+                rate += forecast_provider.get_rate_noise(t, T1, hours, temps)
 
         if strategy == "match_ambient":
             T_setpoint[i] = T_amb
@@ -67,10 +79,10 @@ def simulate_control(day, strategy, model):
 
         else:  # three_phase
             if t < T1:
-                T_setpoint[i] = T_sunset - model.cold_bias
+                T_setpoint[i] = T_sunset_forecast - model.cold_bias
             elif t < T2:
                 alpha = (t - T1) / (T2 - T1)
-                fixed = T_sunset - model.cold_bias
+                fixed = T_sunset_forecast - model.cold_bias
                 tracking = T_amb - model.cold_bias + 0.5 * model.tau * rate
                 T_setpoint[i] = (1 - alpha) * fixed + alpha * tracking
             else:
@@ -120,6 +132,17 @@ def main():
     # Simulate all strategies
     print("\nSimulating all strategies...")
 
+    # Create forecast provider with noise from config
+    temp_rmse_3h = CONFIG["noise"]["temp_rmse_3h"]
+    rate_noise_std = CONFIG["noise"]["rate_noise_std"]
+    print(f"Forecast noise: temp_rmse_3h={temp_rmse_3h}°C, rate_noise_std={rate_noise_std}°C/h")
+
+    forecast_provider = NoisyForecastProvider(
+        rmse_per_hour=temp_rmse_3h,  # Normalized at 3h in the provider
+        rate_noise_std=rate_noise_std,
+        seed=42,
+    )
+
     strategies = {
         "Match Ambient": "match_ambient",
         "Ambient - 0.75C": "ambient_minus_075",
@@ -129,8 +152,9 @@ def main():
     results = {name: [] for name in strategies.keys()}
 
     for day in test_days:
+        forecast_provider.clear_cache()  # Fresh noise for each night
         for name, strategy in strategies.items():
-            result = simulate_control(day, strategy, model)
+            result = simulate_control(day, strategy, model, forecast_provider)
             results[name].extend(result["overnight_errors"])
 
     # Convert to arrays
@@ -258,7 +282,7 @@ def main():
     # Also create a cleaner single histogram comparison
     fig, ax = plt.subplots(figsize=(12, 6))
 
-    bins = np.linspace(-1.5, 1.0, 51)
+    bins = np.linspace(-2.0, 2.0, 81)
 
     for name, errs in results.items():
         ax.hist(errs, bins=bins, alpha=0.6, color=colors[name],
@@ -266,8 +290,6 @@ def main():
                 density=True, edgecolor="none")
 
     ax.axvline(x=0, color="black", linewidth=2.5, label="Ambient")
-    ax.axvline(x=-0.3, color="darkgreen", linewidth=2, linestyle="--", label="Target (-0.3C)")
-    ax.axvline(x=-0.75, color="darkorange", linewidth=2, linestyle=":", label="Target (-0.75C)")
 
     ax.set_xlabel("T_mirror - T_ambient (C)", fontsize=14)
     ax.set_ylabel("Probability Density", fontsize=14)
@@ -278,13 +300,14 @@ def main():
     )
     ax.legend(fontsize=11, loc="upper left")
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(-1.5, 1.0)
+    ax.set_xlim(-2.0, 2.0)
 
     # Add annotation
-    stats_text = []
+    max_rate = CONFIG["physics"]["max_rate"]
+    stats_text = [f"Max setpoint rate: {max_rate} °C/h", ""]
     for name, errs in results.items():
-        pct_good = 100 * np.mean(np.abs(errs) < 0.3)
-        stats_text.append(f"{name}: {pct_good:.0f}% within +/-0.3C of target")
+        pct_good = 100 * np.mean(np.abs(errs) < 0.5)
+        stats_text.append(f"{name}: {pct_good:.0f}% within +/-0.5C of target")
 
     ax.text(0.98, 0.95, "\n".join(stats_text), transform=ax.transAxes,
             fontsize=10, verticalalignment="top", horizontalalignment="right",

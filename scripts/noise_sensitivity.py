@@ -2,8 +2,24 @@
 """
 Analyze how forecast noise affects thermal control performance.
 
-Runs simulations across different temperature and rate noise levels
-and generates comparison plots.
+This script simulates Phase 2 (pre-sunset transition) where a forecast is
+issued at T1 (-3h before sunset) and used throughout the night. The forecast
+noise models realistic prediction uncertainty:
+
+Forecast Usage:
+- T_sunset_forecast: Predicted sunset temperature (3h lead time from T1)
+- Rate: Computed from actual data, then noise added directly (rate_noise_std)
+
+Noise Model:
+- Temperature: noise_std = rmse_3h * (lead_time / 3h)
+  - At 3h lead time: noise_std = rmse_3h
+- Rate: noise_std = rate_noise_std (constant, independent of lead time)
+
+Errors by Quantity:
+- T_sunset (t=0): 3h lead time → noise_std = rmse_3h
+- Rate: Direct noise with std = rate_noise_std (°C/hour)
+
+Metric: Performance within ±0.5°C during first 3h after sunset (t=0 to t=3)
 """
 
 import sys
@@ -40,6 +56,12 @@ def simulate_night(day, model, forecast_provider):
     temps = day["temps"]
     T_sunset = day["T_sunset"]
 
+    # Get noisy forecast of sunset temperature (3h lead time from T1)
+    if forecast_provider is not None:
+        T_sunset_forecast = forecast_provider.get_temperature(0, T1, hours, temps)
+    else:
+        T_sunset_forecast = T_sunset
+
     t_sim = hours.copy()
     n = len(t_sim)
 
@@ -47,26 +69,23 @@ def simulate_night(day, model, forecast_provider):
     T_mirror = np.zeros(n)
     T_ambient = np.zeros(n)
 
-    T_mirror[0] = T_sunset - model.cold_bias
+    T_mirror[0] = T_sunset_forecast - model.cold_bias
 
     for i in range(n):
         t = t_sim[i]
         T_amb = temps[i]
         T_ambient[i] = T_amb
 
-        # Compute rate with forecast provider
-        if forecast_provider is not None:
-            rate = compute_rate(hours, temps, t, 1.0, forecast_provider, t)
-            if hasattr(forecast_provider, 'get_rate_noise'):
-                rate += forecast_provider.get_rate_noise(t, t, hours, temps)
-        else:
-            rate = compute_rate(hours, temps, t, 1.0)
+        # Compute actual rate, then add noise (avoids overestimating error from differencing noisy temps)
+        rate = compute_rate(hours, temps, t, 1.0)
+        if forecast_provider is not None and hasattr(forecast_provider, 'get_rate_noise'):
+            rate += forecast_provider.get_rate_noise(t, T1, hours, temps)
 
         if t < T1:
-            T_setpoint[i] = T_sunset - model.cold_bias
+            T_setpoint[i] = T_sunset_forecast - model.cold_bias
         elif t < T2:
             alpha = (t - T1) / (T2 - T1)
-            fixed = T_sunset - model.cold_bias
+            fixed = T_sunset_forecast - model.cold_bias
             tracking = T_amb - model.cold_bias + 0.5 * model.tau * rate
             T_setpoint[i] = (1 - alpha) * fixed + alpha * tracking
         else:
@@ -91,23 +110,20 @@ def simulate_night(day, model, forecast_provider):
     errors = T_mirror - T_target
     sunset_idx = np.argmin(np.abs(t_sim))
 
-    # Overnight errors only
-    overnight_mask = t_sim >= 0
-    overnight_errors = errors[overnight_mask]
+    # First 3 hours after sunset only
+    first_3h_mask = (t_sim >= 0) & (t_sim <= 3)
+    first_3h_errors = errors[first_3h_mask]
 
     return {
         "error_at_sunset": errors[sunset_idx],
-        "overnight_errors": overnight_errors,
+        "overnight_errors": first_3h_errors,
     }
 
 
 def run_simulation(test_days, model, temp_rmse_3h, rate_noise_std, seed=42):
     """Run simulation for all test days with given noise parameters."""
-    # Convert 3h RMSE to per-hour rate
-    rmse_per_hour = temp_rmse_3h / 3.0
-
     provider = NoisyForecastProvider(
-        rmse_per_hour=rmse_per_hour,
+        rmse_per_hour=temp_rmse_3h,  # Now normalized at 3h in the provider
         rate_noise_std=rate_noise_std,
         seed=seed,
     )
@@ -127,6 +143,7 @@ def run_simulation(test_days, model, temp_rmse_3h, rate_noise_std, seed=42):
     return {
         "overnight_rms": np.sqrt(np.mean(overnight_errors ** 2)),
         "overnight_pct_good": 100 * np.mean(np.abs(overnight_errors) < 0.3),
+        "overnight_pct_good_05": 100 * np.mean(np.abs(overnight_errors) < 0.5),
         "sunset_rms": np.sqrt(np.mean(sunset_errors ** 2)),
         "sunset_pct_good": 100 * np.mean(np.abs(sunset_errors) < 0.3),
     }
@@ -217,41 +234,25 @@ def main():
     print(f"\nSaved: noise_sensitivity_heatmap.png")
     plt.close()
 
-    # Figure 2: Line plots
-    fig, axes = plt.subplots(1, 2, figsize=(14, 5))
+    # Figure 2: Line plot - Within ±0.5°C vs temp noise, curves for rate noise
+    fig, ax = plt.subplots(figsize=(8, 6))
 
-    # RMS vs temp noise (lines for each rate noise)
-    ax = axes[0]
     colors = plt.cm.viridis(np.linspace(0, 0.8, len(rate_noise_levels)))
+    all_pct_values = []
     for i, rate_noise in enumerate(rate_noise_levels):
-        rms_values = [results[(t, rate_noise)]["overnight_rms"] for t in temp_noise_levels]
-        ax.plot(temp_noise_levels, rms_values, "o-", color=colors[i],
-                linewidth=2, markersize=8, label=f"Rate noise = {rate_noise:.2f}")
-
-    ax.set_xlabel("Temperature Forecast RMSE at 3h (°C)", fontsize=11)
-    ax.set_ylabel("Overnight RMS Error (°C)", fontsize=11)
-    ax.set_title("RMS Error vs Temperature Noise", fontsize=12, fontweight="bold")
-    ax.legend(loc="upper left")
-    ax.grid(True, alpha=0.3)
-    ax.set_xlim(-0.05, 1.05)
-
-    # Percent good vs temp noise
-    ax = axes[1]
-    for i, rate_noise in enumerate(rate_noise_levels):
-        pct_values = [results[(t, rate_noise)]["overnight_pct_good"] for t in temp_noise_levels]
+        pct_values = [results[(t, rate_noise)]["overnight_pct_good_05"] for t in temp_noise_levels]
+        all_pct_values.extend(pct_values)
         ax.plot(temp_noise_levels, pct_values, "o-", color=colors[i],
-                linewidth=2, markersize=8, label=f"Rate noise = {rate_noise:.2f}")
+                linewidth=2, markersize=8, label=f"Rate noise = {rate_noise:.2f} °C/h")
 
-    ax.axhline(y=50, color="red", linestyle="--", alpha=0.5, label="50% threshold")
     ax.set_xlabel("Temperature Forecast RMSE at 3h (°C)", fontsize=11)
-    ax.set_ylabel("Within ±0.3°C (%)", fontsize=11)
-    ax.set_title("Performance vs Temperature Noise", fontsize=12, fontweight="bold")
+    ax.set_ylabel("Within ±0.5°C (%)", fontsize=11)
+    ax.set_title("Control Performance vs Temp Noise (First 3h After Sunset)", fontsize=12, fontweight="bold")
     ax.legend(loc="lower left")
     ax.grid(True, alpha=0.3)
-    ax.set_xlim(-0.05, 1.05)
-    ax.set_ylim(0, 70)
+    ax.set_xlim(-0.05, max(temp_noise_levels) + 0.05)
+    ax.set_ylim(min(all_pct_values) - 3, max(all_pct_values) + 3)
 
-    plt.suptitle("Forecast Noise Impact on Control Performance", fontsize=14, fontweight="bold")
     plt.tight_layout()
     plt.savefig(figures_path / "noise_sensitivity_lines.png", dpi=150, bbox_inches="tight")
     print(f"Saved: noise_sensitivity_lines.png")

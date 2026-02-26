@@ -10,7 +10,7 @@ physics:
 
 # Control parameters (optimal from grid search)
 control:
-  t1: -2                # Phase 2 start (hours before sunset)
+  t1: -3                # Phase 2 start (hours before sunset)
   t2: 0                 # Phase 3 start (at sunset)
   lookahead_hours: 3.0  # Lookahead window for phase 3
   lookahead_points: 13  # Points in lookahead kernel
@@ -31,3 +31,8 @@ forecast:
   enabled: false                                      # Toggle forecast mode
   model_path: "../rubin-twilight-forecast/results/model"  # Path to forecast model
   lead_hours: 3                                       # Maximum forecast lead time (hours)
+
+# Forecast noise for simulations
+noise:
+  temp_rmse_3h: 0.6        # Temperature forecast RMSE at 3h lead time (°C)
+  rate_noise_std: 0.2      # Rate noise standard deviation (°C/hour)

@@ -168,9 +168,9 @@ class NoisyForecastProvider(TemperatureProvider):
         # Get actual temperature
         actual = interpolate_temp(hours, temps, t)
 
-        # Compute noise based on lead time
+        # Compute noise based on lead time, normalized at 3h
         lead_time = t - t_origin
-        noise_std = self.rmse_per_hour * lead_time
+        noise_std = self.rmse_per_hour * (lead_time / 3.0)
 
         # Get or generate consistent noise for this forecast
         cache_key = (t_origin, str(hash((temps[0], temps[-1], len(temps)))))

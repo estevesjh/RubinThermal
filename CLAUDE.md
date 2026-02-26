@@ -211,8 +211,11 @@ Scripts for querying Rubin Observatory EFD (Engineering Facility Database) are i
 ### Available Scripts
 
 - `multi_sensor_query.py` -- Multi-sensor temperature query with mean/std aggregation
-- `find_observing_nights.py` -- Identify nights when dome was open (from MTDome.azimuth motion)
-- `query_observing_nights.py` -- Query all sensors for identified observing nights
+- `find_observing_nights.py` -- Identify nights when dome was open (from MTDome shutter position)
+- `query_observing_nights.py` -- Query all sensors for identified observing nights (production pipeline)
+- `query_m1m3_gradients.py` -- Query M1M3 thermocouple spatial gradients via ThermocoupleAnalysis
+- `test_efd_setpoints_gradients.py` -- Test script for setpoints and gradient queries
+- `add_dome_status.py` -- Augment existing data with dome aperture fraction
 - `efd_temp_query.py` -- Original single-sensor query class
 - `helper.py` -- File handling and twilight time utilities
 
@@ -221,7 +224,7 @@ Scripts for querying Rubin Observatory EFD (Engineering Facility Database) are i
 | Sensor | Topic | salIndex | Column(s) |
 |--------|-------|----------|-----------|
 | Outside temp | `lsst.sal.ESS.temperature` | 301 | `temperatureItem0` |
-| Inside air (M2) | `lsst.sal.ESS.temperature` | 112 | `temperatureItem0` |
+| Inside Top End Assembly | `lsst.sal.ESS.temperature` | 112 | `temperatureItem0` |
 | Inside air (M1M3) | `lsst.sal.ESS.temperature` | 113 | `temperatureItem0` |
 | Dome inside | `lsst.sal.ESS.temperature` | 111 | `temperatureItem0` |
 | Wind | `lsst.sal.ESS.airFlow` | 301 | `speed`, `direction`, `maxSpeed` |
@@ -234,9 +237,26 @@ No salIndex needed - dedicated topic with columns:
 - `mirrorCoolantSupplyTemperature` / `mirrorCoolantReturnTemperature`
 - `telescopeCoolantSupplyTemperature` / `telescopeCoolantReturnTemperature`
 
+### M1M3 Setpoint Commands (`lsst.sal.MTM1M3TS.command_applySetpoints`)
+
+No salIndex needed. Commands issued every ~2.5 minutes during active control:
+- `glycolSetpoint` -- Glycol loop target temperature (C)
+- `heatersSetpoint` -- Heater target temperature (C), typically glycolSetpoint + 1.0C
+
+### M1M3 Thermocouple Gradients
+
+Queried via `lsst.ts.m1m3.utils.ThermocoupleAnalysis`, which internally queries `lsst.sal.ESS.temperature` with salIndex 114-117 (4 thermal scanners, 146 thermocouples total).
+
+Gradients are computed by least-squares plane fitting to thermocouple positions:
+- `x_gradient` / `y_gradient` -- East-West / North-South gradients (C/m)
+- `z_gradient` -- Front-Back gradient (unitless, normalized z: 0=back, 1=front)
+- `radial_gradient` -- Center-Edge gradient (C/m)
+
+Operational limits: X/Y +/- 0.4C (across 8.4m), Z/Radial +/- 0.1C.
+
 ### Dome Status
 
-Use `lsst.sal.MTDome.azimuth` with `positionActual` and `velocityActual` to detect dome motion (dome open when tracking).
+Use `lsst.sal.MTDome.apertureShutter` with `positionActual0` and `positionActual1`. Dome is open when both shutters are in [90, 110] degrees.
 
 ### Query Usage
 
@@ -244,28 +264,65 @@ Use `lsst.sal.MTDome.azimuth` with `positionActual` and `velocityActual` to dete
 # Explore available columns
 python multi_sensor_query.py --explore --start 2024-12-01 --end 2024-12-05
 
-# Query specific sensors
+# Query specific sensors (including setpoints)
 python multi_sensor_query.py --query --start 2024-12-01 --end 2024-12-15 \
-    --sensors inside_air_m2 m1m3_glycol outside_temp
+    --sensors inside_air_m2 m1m3_glycol m1m3_setpoints outside_temp
 
 # Find observing nights
 python find_observing_nights.py --start 2024-01-01 --output observing_nights.csv
 
 # Query all sensors for observing nights (1-min resolution, mean/std)
-python query_observing_nights.py --output-dir /sdf/data/rubin/user/esteves/thermal_analysis
+python query_observing_nights.py \
+    --nights-csv /sdf/data/rubin/user/esteves/thermal_analysis/observing_nights_2025.csv \
+    --start-night 2025-07-01 \
+    --output-dir /sdf/data/rubin/user/esteves/thermal_analysis
+
+# Query thermocouple gradients for observing nights (1-min resolution)
+python query_m1m3_gradients.py \
+    --nights-csv /sdf/data/rubin/user/esteves/thermal_analysis/observing_nights_2025.csv \
+    --min-date 2025-07-01 --time-bin 60 \
+    -o /sdf/data/rubin/user/esteves/thermal_analysis/gradient_data_observing_nights.csv
+
+# Test setpoints and gradient queries
+python test_efd_setpoints_gradients.py --all --hours 2
+python test_efd_setpoints_gradients.py --explore  # Discover all setpoint columns
 ```
 
-### Pre-Built Dataset
+### Pre-Built Datasets
 
-Thermal data for 295 observing nights (Feb 2024 - Feb 2026) in `data/`:
+Thermal data in `/sdf/data/rubin/user/esteves/thermal_analysis/`:
 
 | File | Description |
 |------|-------------|
-| `observing_nights_2024.csv` | All nights with dome motion stats |
-| `observing_nights_2024_observing_only.csv` | 295 observing nights list |
-| `thermal_data_all_observing_nights.csv` | 247,512 rows, 1-min resolution, 29 columns |
+| `observing_nights_2025.csv` | 366 nights (Jan 2025 - Feb 2026) with dome open stats, 224 observing |
+| `thermal_data_all_observing_nights.csv` | 173,084 rows, 166 nights (Jul 2025 - Feb 2026), 1-min, 37 columns |
+| `gradient_data_observing_nights.csv` | 120,880 rows, 164 nights (Jul 2025 - Feb 2026), 1-min, 11 columns |
 
-**Data coverage:**
-- Outside temp & wind: 99.9%
-- Inside temps (ESS 112, 113): ~86-88%
-- M1M3 glycol temps: 84.4% (from Oct 30, 2024 - 251 nights)
+**Columns in `thermal_data_all_observing_nights.csv` (37 columns):**
+
+| Category | Columns |
+|----------|---------|
+| Timestamp | `timestamp` (index, UTC) |
+| Outside (ESS 301) | `outside_temp_mean/std` |
+| Wind (ESS 301) | `wind_speed_mean/std`, `wind_direction_mean/std`, `wind_maxSpeed_mean/std` |
+| Inside Top End Assembly (ESS 112) | `inside_m2_temp_mean/std` |
+| Inside M1M3 (ESS 113) | `inside_m1m3_temp_mean/std` |
+| M1M3 Glycol | `aboveMirrorTemperature_mean/std`, `insideCellTemperature1/2/3_mean/std`, `mirrorCoolantSupply/ReturnTemperature_mean/std`, `telescopeCoolantSupply/ReturnTemperature_mean/std` |
+| M1M3 Setpoints | `glycolSetpoint_mean/std`, `heatersSetpoint_mean/std` |
+| Dome Status | `positionActual0`, `positionActual1`, `sunAltitude`, `dome_open` |
+| Metadata | `night_date` |
+
+**Columns in `gradient_data_observing_nights.csv` (11 columns):**
+
+| Category | Columns |
+|----------|---------|
+| Timestamp | `timestamp` (index, UTC) |
+| Fit | `intercept`, `intercept_err` |
+| Gradients | `x_gradient`, `y_gradient`, `z_gradient`, `radial_gradient` |
+| Uncertainties | `x_gradient_err`, `y_gradient_err`, `z_gradient_err`, `radial_gradient_err` |
+| Metadata | `night_date` |
+
+**Data notes:**
+- Thermocouple gradient data available from Jul 2025 onward (2 nights with gaps)
+- Setpoint commands available from Jul 2025 onward (issued every ~2.5 min during active control)
+- Night coverage: 6h before sunset to sunrise (UTC), night_date is Chile local evening date
