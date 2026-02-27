@@ -1,0 +1,164 @@
+\documentclass[11pt]{article}
+
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{amsmath, amssymb}
+\usepackage{caption, subcaption}
+\usepackage{float}
+\usepackage{booktabs}
+\usepackage{hyperref}
+
+\geometry{a4paper, margin=1in}
+
+\title{Dome Thermal Environment Analysis:\\Thermalization of the Rubin Observatory Dome}
+\author{J. Esteves}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+% ----------------------------------------------------------------
+\section{Introduction}
+
+The Rubin Observatory M1M3 mirror must be maintained slightly below ambient air temperature to avoid ``mirror seeing'' --- convective plumes from a warm surface that degrade image quality. A critical driver of the internal thermal environment is the dome itself: when the dome opens at sunset, warm daytime air trapped inside must equilibrate with the cooler outside atmosphere. Understanding the timescale and physics of this thermalization is essential for predicting mirror temperature evolution and optimizing thermal control strategies.
+
+This study characterizes the dome thermalization process using 166 observing nights of data (July 2025 -- February 2026) from the Rubin Observatory Engineering Facility Database (EFD). We develop ODE models in the $\Delta T$ frame to isolate the dome's thermal response from the ambient cooling trend, and use transient analysis of dome-opening events to measure the true ventilation time constant.
+
+% ----------------------------------------------------------------
+\section{Data}
+
+\subsection{Sensors}
+
+\begin{table}[H]
+\centering
+\caption{Temperature sensors used in this analysis.}
+\begin{tabular}{llll}
+\toprule
+Measurement & EFD Topic & salIndex & Location \\
+\midrule
+$T_\mathrm{in}$: Inside air (Top End Assembly) & \texttt{ESS.temperature} & 112 & Upper dome \\
+$T_\mathrm{out}$: Outside air & \texttt{ESS.temperature} & 301 & Weather station \\
+$T_\mathrm{ground}$: M1M3 level air & \texttt{ESS.temperature} & 113 & Lower dome \\
+Dome shutter position & \texttt{MTDome.apertureShutter} & --- & --- \\
+Wind speed & \texttt{ESS.airFlow} & 301 & Weather station \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+All data are at 1-minute resolution. The dome is considered open when both shutter positions are in the range $[90, 110]$ degrees. ESS~113 is a humidity/temperature sensor at the M1M3 level, providing the lowest instrumented temperature in the dome.
+
+\subsection{Preprocessing}
+
+A 61-point (1-hour) Savitzky-Golay filter (polynomial order 2) is applied independently to $T_\mathrm{in}$ and $T_\mathrm{out}$. This preserves the thermal step response at dome opening while removing high-frequency turbulence noise. The same smoothing is applied consistently to all temperatures used in fitting.
+
+% ----------------------------------------------------------------
+\section{Methods: $\Delta T$ Frame}
+
+We work in the temperature differential frame $\Delta T(t) = T_\mathrm{in}(t) - T_\mathrm{out}(t)$. Since both temperatures share the same ambient cooling trend, the $\Delta T$ frame isolates the dome's own thermal response. From the basic ODE $dT_\mathrm{in}/dt = (T_\mathrm{out} - T_\mathrm{in})/\tau$, we obtain:
+\begin{equation}
+    \frac{d\Delta T}{dt} = -\frac{\Delta T}{\tau} - \frac{dT_\mathrm{out}}{dt}
+\end{equation}
+The derivative coupling $dT_\mathrm{out}/dt$ appears \emph{naturally} in this frame --- it is not a free parameter but a consequence of the coordinate transformation. This eliminates the need for the ad-hoc $k$ parameter used in the $T_\mathrm{in}$ frame.
+
+\subsection{Forced Ventilation}
+
+Pure air exchange with outside, with an equilibrium offset $\Delta T_\mathrm{eq}$ that the dome settles to:
+\begin{equation}
+    \frac{d\Delta T}{dt} = -\frac{\Delta T - \Delta T_\mathrm{eq}}{\tau} - \frac{dT_\mathrm{out}}{dt}
+    \label{eq:forced_offset}
+\end{equation}
+Parameters: $\tau$ (ventilation time constant), $\Delta T_\mathrm{eq}$ (equilibrium offset from structural thermal mass). The dome air relaxes toward $\Delta T_\mathrm{eq}$ rather than zero, capturing the persistent temperature offset caused by the warm structural mass.
+
+\subsection{Stratified Exchange}
+
+The dome interior is vertically stratified. ESS~113 at the M1M3 level provides $T_\mathrm{ground}(t)$, and the temperature differential between ground and outside is $\Delta T_\mathrm{ground}(t) = T_\mathrm{ground}(t) - T_\mathrm{out}(t)$:
+\begin{equation}
+    \frac{d\Delta T}{dt} = -\frac{\Delta T - (1-\alpha)\,\Delta T_\mathrm{ground}(t)}{\tau} - \frac{dT_\mathrm{out}}{dt}
+    \label{eq:stratified}
+\end{equation}
+Parameters: $\tau$ (ventilation time constant), $\alpha$ (sky-coupling fraction). When $\alpha = 1$, the model reduces to pure forced ventilation ($\Delta T \to 0$). When $\alpha < 1$, the dome air is partially anchored to the warmer ground level.
+
+% ----------------------------------------------------------------
+\section{Transient Analysis}
+
+\subsection{Event Selection}
+
+We focus on \textbf{single-opening nights} --- the 141 nights (of 166 total) where the dome opens once and stays open. Each night provides one clean step response. A quality cut requires $|T_\mathrm{in}(0) - T_\mathrm{in}(15\,\mathrm{min})| > 0.5$\,\textdegree C to ensure a measurable thermal signal, yielding \textbf{47 quality events}.
+
+\subsection{Fit Window}
+
+Models are fitted on the first \textbf{60 minutes} after dome opening ($t = 0$ to $t = 60$\,min), with 30 minutes of pre-open data included for baseline context. The ODE is solved from $t = 0$ using the measured $\Delta T(0)$ as the initial condition. Model predictions are extrapolated to $t = 120$\,min to assess forecast quality beyond the fit window.
+
+\subsection{Results}
+
+\begin{table}[H]
+\centering
+\caption{Transient fit results for 47 quality dome-opening events (1-hour smoothing, 1-hour fit window). All models use the $\Delta T$ frame with natural $dT_\mathrm{out}/dt$ coupling.}
+\label{tab:transient_results}
+\begin{tabular}{lccccc}
+\toprule
+Model & Params & Median $\tau$ & IQR & P10--P90 & Median RMSE \\
+\midrule
+Forced (no offset) & 1 & 34 min & [20, 64] & [9, 111] & 0.108\,\textdegree C \\
+\textbf{Forced + Offset} & \textbf{2} & \textbf{24 min} & \textbf{[16, 36]} & \textbf{[7, 90]} & \textbf{0.059\,\textdegree C} \\
+Stratified & 2 & 22 min & [12, 36] & [8, 87] & 0.079\,\textdegree C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The Forced + Offset model provides the best fit quality (RMSE = 0.059\,\textdegree C) with the tightest $\tau$ distribution. The key result is:
+\begin{equation}
+    \boxed{\tau = 24 \pm 10\,\mathrm{min} \quad (\mathrm{IQR:}\; [16, 36]\,\mathrm{min})}
+\end{equation}
+
+This is \textbf{significantly shorter} than full-night estimates ($\tau \sim 1$--$6$\,h), which are inflated by structural rewarming that occurs after the initial ventilation is complete.
+
+\subsection{Equilibrium Offset}
+
+The fitted $\Delta T_\mathrm{eq} = -0.13$\,\textdegree C (median) indicates the dome settles $\sim 0.1$--$0.3$\,\textdegree C \emph{colder} than outside air. This offset is:
+\begin{itemize}
+    \item Independent of absolute temperature ($r = -0.06$ with mean $T_\mathrm{in}$)
+    \item Weakly correlated with initial $\Delta T$ ($r = 0.26$)
+    \item Strongly anti-correlated with $\tau$ ($r = -0.79$): larger offsets correspond to faster apparent thermalization
+\end{itemize}
+
+The negative $\Delta T_\mathrm{eq}$ is consistent with the structural thermal mass (concrete pier, steel) being slightly colder than outside air at the time of dome opening --- the structure retains the cold from the previous night.
+
+\subsection{Nights That Never Thermalize}
+
+Of the 141 single-opening nights, 94 (67\%) show $|T_\mathrm{in}(0) - T_\mathrm{in}(15\,\mathrm{min})| < 0.5$\,\textdegree C. On these nights, the dome interior temperature barely changes in the first 15 minutes after opening. Two physical scenarios produce this:
+
+\begin{enumerate}
+    \item \textbf{Already equilibrated} ($|\Delta T_0| < 0.5$\,\textdegree C): The dome was pre-ventilated or the daytime temperature was close to the evening outside temperature. There is no thermalization signal because the dome is already at equilibrium. This accounts for the majority of non-thermalizing nights.
+
+    \item \textbf{Persistently warm dome} ($\Delta T_0 > 2$\,\textdegree C): On rare occasions, the dome interior is several degrees warmer than outside and does not cool appreciably in the first two hours. These events suggest the structural thermal mass is so warm that it overwhelms the ventilation cooling, maintaining an elevated $T_\mathrm{in}$ despite the dome being open. The thermal inertia of the concrete pier and steel structure acts as a heat reservoir that resists equilibration on hour timescales.
+\end{enumerate}
+
+These non-thermalizing nights are excluded from the $\tau$ statistics but are important for thermal control: they represent the worst-case scenario where the dome environment cannot be cooled to the target temperature by ventilation alone.
+
+% ----------------------------------------------------------------
+\section{Full-Night Analysis}
+
+For completeness, we also fit full-night models (dome open $-1$\,h to $+9$\,h) on all 157 nights with $>3$\,h dome-open time. In the $T_\mathrm{in}$ frame, the Stratified Exchange model (using ESS~113 as the ground coupling) achieves median RMSE = 0.25\,\textdegree C. However, the full-night $\tau$ estimates are systematically longer ($\tau \sim 1$--$3$\,h) because they integrate over both the fast ventilation and the slow structural equilibration that dominates after the first hour.
+
+The transient analysis (Section~4) provides the more physically meaningful $\tau$ because it isolates the ventilation process from the structural response.
+
+% ----------------------------------------------------------------
+\section{Discussion}
+
+The $\Delta T$ frame provides a cleaner physical picture than the $T_\mathrm{in}$ frame. The derivative coupling $dT_\mathrm{out}/dt$, which required a fitted parameter $k$ in the $T_\mathrm{in}$ frame, appears naturally as a coordinate transformation artifact. This reduces the Forced Ventilation model from 2 parameters ($\tau$, $k$) to 1 parameter ($\tau$), and the offset model from 3 to 2 ($\tau$, $\Delta T_\mathrm{eq}$).
+
+The dome thermalization has a clear two-timescale structure:
+\begin{enumerate}
+    \item \textbf{Fast ventilation} ($\tau \approx 24$\,min): Outside air enters through the dome aperture and equilibrates the upper dome volume. This is the true forced-convection air exchange, measurable from the first hour after dome opening.
+    \item \textbf{Slow structural response} (hours): The concrete pier, steel structure, and mirror surface slowly release stored daytime heat, creating a persistent warm bias that modulates the dome air from below. This process inflates $\tau$ in full-night fits.
+\end{enumerate}
+
+The equilibrium offset $\Delta T_\mathrm{eq} \approx -0.15$\,\textdegree C is small and stable, indicating the dome achieves near-complete ventilation. The practical implication for mirror thermal control is that the dome air environment responds to aperture opening within $\sim 25$\,minutes, but the structural thermal mass creates a persistent (though small) offset that evolves on multi-hour timescales.
+
+% ----------------------------------------------------------------
+\section{Conclusion}
+
+Using 141 single dome-opening events from 166 observing nights, we measure the Rubin Observatory dome ventilation time constant as $\tau = 24$\,min (IQR: [16, 36]\,min) in the $\Delta T$ frame. The dome settles to an equilibrium offset of $\Delta T_\mathrm{eq} \approx -0.15$\,\textdegree C (slightly colder than outside). Two-thirds of nights show no significant thermal signal at dome opening, indicating the dome is typically already near equilibrium. The remaining one-third, with measurable $\Delta T$, thermalize within $\sim 30$\,minutes. Full-night $\tau$ estimates of 1--6 hours from the literature are artifacts of conflating the fast ventilation process with the slow structural thermal response.
+
+\end{document}
