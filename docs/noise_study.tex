@@ -1,0 +1,144 @@
+
+\documentclass{article}
+\usepackage[utf8]{inputenc}
+\usepackage{graphicx}
+\usepackage{geometry}
+\usepackage{amsmath}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{float}
+\usepackage{booktabs}
+\geometry{a4paper, margin=1in}
+
+\title{\textbf{Solar-Induced Thermal Turbulence: Characterization and Adaptive Mitigation in Rubin Observatory Temperature Sensors}}
+\author{Data Analysis Study}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\section{Introduction: The ``Daytime Jitter'' Problem}
+High-precision temperature monitoring is critical for maintaining the thermal stability required for the Rubin Observatory's seeing and pointing models. However, raw sensor data exhibits significant high-frequency noise during daylight hours, masking true ambient temperature trends. This study aims to quantify this noise, identify its physical drivers (solar heating and radiative isolation), and develop an adaptive filtering method to recover the true signal without degrading nighttime precision.
+
+\subsection{Instrumentation}
+The Summit Weather Tower employs a \textbf{Young Model 41382VC} combined temperature and relative humidity probe, housed in a \textbf{Young Model 41003P-24} multi-plate radiation shield. The 41382VC uses a platinum RTD for temperature measurement with a manufacturer-specified accuracy of $\pm 0.3^\circ$C at $23^\circ$C and a measurement range of $-50$ to $+50^\circ$C. The 41003P-24 radiation shield consists of stacked white plastic plates designed to block direct solar radiation while permitting natural airflow around the sensor element. However, as demonstrated in this study, the passive shield design exhibits imperfect radiative isolation under conditions of high solar altitude and elevated ambient temperature.
+
+\section{Methodology and Definitions}
+To systematically analyze the noise, we define the following metrics based on the sensor's sampling frequency (4 samples per hour).
+
+\subsection{Noise Metric: Spread}
+The primary proxy for instantaneous noise is the 15-minute spread, defined as the range between the maximum and minimum recorded temperatures within a single sampling interval:
+\begin{equation}
+    S_{15m}(t) = T_{max}(t) - T_{min}(t)
+\end{equation}
+
+\subsection{Statistical Noise Reference}
+To validate the spread as a noise proxy, we calculate the standard deviation of the residuals relative to a smooth moving average. We define the baseline signal using a 1-hour centered Simple Moving Average ($SMA$):
+\begin{equation}
+    SMA_{1h}(t) = \frac{1}{N} \sum_{i=-N/2}^{N/2} T(t+i\Delta t)
+\end{equation}
+where $N=4$ for 15-minute sampling. The residual $R(t)$ is:
+\begin{equation}
+    R(t) = T(t) - SMA_{1h}(t)
+\end{equation}
+The statistical noise $\sigma_{res}$ is then the standard deviation of $R(t)$ over a rolling window (typically 4 hours).
+
+\subsection{Solar Progress Normalization}
+To compare noise profiles across seasons with varying day lengths, we normalize time into a ``Progress'' variable $P(t)$. Let $t_{rise}$ and $t_{set}$ be the local sunrise and sunset times.
+\begin{equation}
+    P(t) = 
+    \begin{cases} 
+      \frac{t - t_{set}}{t_{rise_{next}} - t_{set}} - 1 & \text{if } t < t_{rise} \text{ (Pre-dawn Night)} \\
+      \frac{t - t_{rise}}{t_{set} - t_{rise}} & \text{if } t_{rise} \le t \le t_{set} \text{ (Day)} \\
+      \frac{t - t_{set}}{t_{rise_{next}} - t_{set}} & \text{if } t > t_{set} \text{ (Post-sunset Night)}
+    \end{cases}
+\end{equation}
+This scales the day from $0$ to $1$ and the night from $-1$ to $0$ (and $0$ to $1$ for the subsequent night relative to sunset).
+
+\section{Characterizing the Instability}
+
+\subsection{Thermal and Solar Dependence}
+As illustrated in Figure \ref{fig:diagnostics} (Top Panels), the noise is not random. The 15-minute spread ($S_{15m}$) and the residual standard deviation ($\sigma_{res}$) track each other closely, confirming $S_{15m}$ is a valid real-time proxy for noise. Both metrics scale linearly with ambient temperature, indicating that hotter air masses induce greater turbulence around the sensor.
+
+\subsection{The ``Hot Zone''}
+The Hexbin plot in Figure \ref{fig:diagnostics} (Bottom Left) reveals a critical interaction: high instability ($S_{15m} > 1.0^\circ$C) is confined to a specific regime where high solar altitude coincides with high ambient temperatures ($>20^\circ$C). This suggests that the noise is driven by local convective currents and radiative heating of the sensor housing, likely due to imperfect radiative isolation. A cool winter day remains stable, whereas a hot summer afternoon represents the worst-case scenario.
+
+\subsection{Day vs. Night Regimes}
+The density plot in Figure \ref{fig:diagnostics} (Bottom Right) confirms two distinct statistical regimes. Nighttime residuals (Blue) are tightly clustered around zero ($\sigma \approx 0.1^\circ$C), representing the sensor's intrinsic precision. Daytime residuals (Red) form a broad, heavy-tailed distribution, driven by external solar forcing.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=\textwidth]{figure_b.png}
+    \caption{Noise Characterization. (Top Left) Noise metrics vs. Temperature. (Top Right) Noise metrics vs. Solar Progress. (Bottom Left) Hexbin density of noise spread as a function of Temperature and Progress, highlighting the ``Hot Zone''. (Bottom Right) Probability density of residuals for Day (Red) vs. Night (Blue).}
+    \label{fig:diagnostics}
+\end{figure}
+
+\section{Seasonal Validation}
+Long-term stability is confirmed in Figure \ref{fig:seasonal}. Despite seasonal variations in absolute noise magnitude, the ratio between the instantaneous spread $S_{15m}$ and the statistical noise $\sigma_{res}$ remains consistent over the 2.5-year dataset. This predictability allows us to apply a single, robust correction strategy year-round.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{figure_c.png}
+    \caption{Seasonal stability. The 15-minute spread (Maroon) and 1-hour residual standard deviation (Black) track consistently across seasons.}
+    \label{fig:seasonal}
+\end{figure}
+
+\section{Mitigation: Adaptive Denoising}
+
+\subsection{Adaptive Filter Design}
+To address the daytime jitter without compromising nighttime sensitivity, we implement a progress-based adaptive Gaussian filter. The filter width $\sigma_f$ is modulated by the observed noise profile $\sigma_{noise}(P)$. We utilize a conservative scaling factor of $k=6.0$ to ensure maximum signal preservation:
+\begin{equation}
+    \sigma_{noise}(P) = \frac{S_{15m}(P)}{6.0}
+\end{equation}
+\begin{equation}
+    \sigma_f(P) = 4.0 \cdot \sigma_{noise}(P)
+\end{equation}
+This design ensures that the filter effectively "turns off" during stable conditions while remaining active during high-turbulence periods.
+
+\subsection{Results}
+Table \ref{tab:results} quantifies the improvement across different phases of the diurnal cycle. 
+\begin{table}[!htb]
+\centering
+\caption{Residual Standard Deviation ($\sigma_{res}$) Comparison ($k=6$)}
+\label{tab:results}
+\begin{tabular}{lrrr}
+\toprule
+Cycle Phase & Raw $\sigma_{res}$ ($^\circ$C) & Denoised $\sigma_{res}$ ($^\circ$C) & Reduction \\
+\midrule
+Sunrise (-1.0 to -0.9) & 0.131 & 0.124 & 6\% \\
+Solar Noon (-0.5 to -0.25) & 0.227 & 0.115 & 49\% \\
+Night (0.3 to 0.9) & 0.117 & 0.117 & $<$0.01\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{itemize}
+    \item \textbf{Nighttime Fidelity:} During stable night conditions (Progress 0.3 to 0.9), the denoised residual standard deviation ($0.117098^\circ$C) is virtually identical to the raw data ($0.117107^\circ$C). This confirms that the filter preserves the sensor's intrinsic precision and real atmospheric fluctuations with near-perfect fidelity.
+    \item \textbf{Daytime Suppression:} Despite this conservative approach, the filter remains highly effective during the day. At Solar Noon, it reduces the noise floor from $0.227^\circ$C to $0.115^\circ$C, a reduction of approximately 49\%.
+\end{itemize}
+
+
+\section{Future Work: Radiative Bias Correction}
+
+While the adaptive filter successfully mitigates high-frequency noise, a more fundamental concern remains: if the radiation shield and surrounding air column are being heated by solar radiation, the \textit{mean} temperature reading may be systematically biased, not merely noisy. The observed turbulence reflects mixing between heated and ambient air masses, but the time-averaged measurement could still be elevated relative to the true free-air temperature. This systematic warm bias would propagate into any downstream thermal model or forecast system trained on the affected data.
+
+A physics-informed correction model could estimate the radiative bias $\Delta T_{rad}$ as a function of solar geometry and meteorological conditions:
+\begin{equation}
+    \Delta T_{rad} = \frac{\alpha \cdot \sin(\theta_{sun})^{\beta}}{1 + \gamma \cdot u}
+\end{equation}
+where $\theta_{sun}$ is the solar altitude angle, $u$ is the wind speed (which enhances convective cooling of the shield), and $\alpha$, $\beta$, $\gamma$ are empirical parameters to be determined. The instantaneous spread $S_{15m}$ may itself serve as a proxy for the bias magnitude, under the assumption that both noise and bias share a common physical origin in radiative loading.
+
+The Rubin Observatory Engineering and Facility Database (EFD) provides the necessary ancillary data to develop such a correction. The summit weather tower records wind speed and direction via a Young Model 05108 anemometer (\texttt{lsst.sal.ESS.airFlow}), and relative humidity from the same Young 41382VC probe (\texttt{lsst.sal.ESS.relativeHumidity}). Relative humidity offers an independent diagnostic: if local heating occurs, RH should decrease (constant absolute humidity at elevated temperature) even when ambient conditions are stable. A correlation between RH anomalies and the noise metric $S_{15m}$ would confirm the radiative heating hypothesis.
+
+Additionally, GOES-16 satellite retrievals of land surface temperature or derived air temperature products could provide an independent reference for calibrating the bias correction, particularly during clear-sky conditions when the satellite retrievals are most reliable.
+
+\section{Conclusion}
+
+The observed correlation between sensor noise and solar altitude is consistent with the design characteristics of the Young 41003P-24 multi-plate radiation shield. The shield's horizontal stacked-plate geometry provides effective shading at low solar elevations, when incoming radiation arrives at oblique angles and is blocked by the overlapping plates. However, at high solar altitudes---particularly near solar noon---direct and reflected radiation can penetrate the gaps between plates, heating both the shield structure and the air column surrounding the platinum RTD element. This radiative loading induces local convective turbulence, manifesting as the elevated noise ($\sigma_{res} \approx 0.23^\circ$C) observed in the ``Hot Zone'' regime where high solar altitude coincides with high ambient temperature.
+
+The nighttime noise floor of $0.117^\circ$C is well within the manufacturer-specified accuracy of $\pm 0.3^\circ$C for the Young 41382VC, confirming that the sensor performs to specification under thermally stable conditions. The factor-of-two noise increase during daytime is therefore not an instrument defect but a predictable consequence of passive radiative shielding in a high-altitude desert environment.
+
+The adoption of an \textbf{Adaptive Gaussian Filter with $k=6$} provides the optimal operational strategy for mitigating this solar-induced noise. This configuration satisfies the strict requirement for nighttime data integrity---modifying the signal by less than $0.001^\circ$C---while reducing daytime noise by approximately 49\% at solar noon. By adaptively suppressing noise only when solar geometry and ambient conditions warrant, the filter extends the effective precision of the temperature record without compromising the fidelity of nighttime observations critical for thermal modeling.
+
+\end{document}

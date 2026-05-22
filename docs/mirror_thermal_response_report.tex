@@ -1,0 +1,1007 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{M1M3 Mirror Thermal Response to Setpoint Changes:\\
+Surface-Resolved Analysis}
+\author{J.\ Esteves}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+%----------------------------------------------------------------------
+\section{Introduction}
+
+The M1M3 thermal control system maintains the mirror at a target
+temperature below ambient to prevent convective ``mirror seeing.''
+The Environmental Awareness Service (EAS) issues setpoint commands to
+the glycol heater system (\texttt{MTM1M3TS.command\_applySetpoints},
+field \texttt{heatersSetpoint}), which heats or cools the mirror
+through glycol circulation.
+
+This report characterizes the actual thermal transfer function from
+setpoint to mirror temperature using 149 observing nights of archival
+data (July 2025 -- February 2026).  The goals are:
+\begin{enumerate}
+  \item Document the EAS setpoint strategy (offset, rate, cadence).
+  \item Measure the glycol system transfer function (lag, time constant).
+  \item Validate and calibrate our first-order thermal model
+    $dT/dt = (T_\mathrm{sp} - T_\mathrm{mirror})/\tau$.
+  \item Quantify the actual EAS tracking performance.
+  \item Resolve the thermal behavior at three depth levels---back
+    (near FCUs), middle, and front (optical surface)---using the
+    thermocouple gradient-fit decomposition.
+  \item Characterize the coupling of each surface with cell air
+    (ESS~113) and glycol, in both pre-control and active-control
+    periods.
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Data}
+
+All data come from the pre-built observing-night parquet file
+(166~nights, 1-min resolution) and the thermocouple gradient dataset
+(164~nights).  Key channels:
+
+\begin{table}[htbp]
+\centering
+\caption{Sensor channels used in this analysis.}
+\label{tab:channels}
+\begin{tabular}{llc}
+\toprule
+Channel & Source & Coverage \\
+\midrule
+\texttt{heatersSetpoint\_mean} & \texttt{MTM1M3TS.command\_applySetpoints} & 8.9\% (163 nights) \\
+$T_\mathrm{mid}$ (intercept + 0.5$\times$z\_gradient) & 96-thermocouple gradient fit & 97\% (164 nights) \\
+\texttt{z\_gradient}, \texttt{z\_gradient\_err} & 96-thermocouple gradient fit & 97\% \\
+\texttt{mirrorCoolantSupply/Return} & \texttt{MTM1M3TS.glycolLoopTemperature} & 97\% \\
+\texttt{inside\_m1m3\_temp\_mean} & ESS~113 & 99.5\% \\
+\texttt{outside\_temp\_mean} & ESS~301 & 99.7\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The \textbf{mirror temperature reference} is the mid-surface temperature
+$T_\mathrm{mid}$ ($z_\mathrm{norm} = 0.5$) from the gradient-fit
+decomposition of the 96 thermocouples (see Section~\ref{sec:sensor_map}).
+This is the best proxy for the bulk glass temperature, as it lies
+halfway between the glycol-cooled back surface and the air-facing
+optical surface.  The gradient \texttt{intercept} (back surface center,
+$z_\mathrm{norm} = 0$) and \texttt{z\_gradient\_err} (through-glass
+gradient uncertainty) are also used.
+
+The setpoint is a sparse signal (issued every $\sim$3\,min as discrete
+commands); it is forward-filled onto the 1-min grid for time-series
+analysis.  Nights with fewer than 10 setpoint commands or fewer than
+60~min of mirror temperature data are excluded, leaving 149 valid nights.
+
+%----------------------------------------------------------------------
+\section{EAS Setpoint Strategy}
+
+\subsection{Setpoint Offset}
+
+The EAS targets the heater setpoint at a fixed offset below the M1M3
+air temperature (ESS~113):
+
+\begin{table}[htbp]
+\centering
+\caption{Setpoint offset statistics (149 nights).}
+\label{tab:offset}
+\begin{tabular}{lccc}
+\toprule
+Offset & Median & Mean & Std \\
+\midrule
+Setpoint $-$ ESS~113 & $-1.00$\,\textdegree C & $-1.36$\,\textdegree C & 1.27\,\textdegree C \\
+Setpoint $-$ $T_\mathrm{mid}$ ($z_\mathrm{norm}=0.5$) & $-0.07$\,\textdegree C & $-0.35$\,\textdegree C & 1.15\,\textdegree C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The EAS uses a \textbf{1.0\,\textdegree C cold bias} relative to
+ESS~113, not the 0.3\,\textdegree C assumed in our simulation model.
+The setpoint sits only $-0.07$\,\textdegree C below $T_\mathrm{mid}$,
+meaning the glycol system maintains the bulk glass temperature almost
+exactly at the commanded setpoint.
+Figure~\ref{fig:strategy} (top left) shows the offset distributions.
+
+\subsection{Setpoint Rate}
+
+The EAS changes the setpoint at a median rate of 0.6\,\textdegree C/h,
+with a 95th percentile of 1.8\,\textdegree C/h
+(Figure~\ref{fig:strategy}, top right).  Notably, the EAS
+\textbf{does not respect the 0.7\,\textdegree C/h rate limit} that we
+enforce in our simulation---roughly half of the EAS rate changes exceed
+this threshold.  This suggests the hardware can sustain higher rates
+than we assumed.
+
+\subsection{Update Cadence}
+
+Setpoint commands are issued every 3.0\,min (median), with occasional
+gaps of 10--15\,min (Figure~\ref{fig:strategy}, bottom left).  This is
+much faster than our 15-min simulation timestep.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_setpoint_strategy.png}
+\caption{EAS setpoint strategy.  Top left: offset distributions
+  (setpoint minus ESS~113 and minus $T_\mathrm{mid}$).  Top right:
+  absolute setpoint rate distribution; the red line marks our assumed
+  0.7\,\textdegree C/h limit.  Bottom left: update cadence (median
+  3\,min).  Bottom right: example night showing all thermal channels
+  including $T_\mathrm{mid}$ ($z_\mathrm{norm} = 0.5$).}
+\label{fig:strategy}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Glycol System Transfer Function}
+
+\subsection{Heat Flux Proxy}
+
+The coolant supply--return temperature difference
+($T_\mathrm{supply} - T_\mathrm{return}$) is a proxy for heat flux
+through the glycol loop.  Figure~\ref{fig:transfer} (top left) shows
+that when the setpoint is far below the mirror temperature (large
+negative error), the supply--return $\Delta T$ reaches $-6$ to
+$-7$\,\textdegree C, indicating strong active cooling.  Near zero
+setpoint error, the supply--return $\Delta T$ clusters near zero
+(passive tracking).
+
+\subsection{Setpoint-to-Mirror Lag}
+
+Cross-correlating the setpoint rate with the $T_\mathrm{mid}$
+rate gives a median lag of \textbf{4\,minutes}
+(Figure~\ref{fig:transfer}, top right).  This is the time for a
+setpoint change to begin affecting the bulk glass temperature.  The
+short lag confirms that the glycol system responds rapidly to setpoint
+commands.
+
+\subsection{Setpoint Tracking}
+
+Figure~\ref{fig:transfer} (bottom right) confirms that the EAS tracks
+ESS~113 with a $-1$\,\textdegree C offset: the per-night trajectories
+cluster tightly along the $\mathrm{ESS\,113} - 1$\,\textdegree C line.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_step_response.png}
+\caption{Glycol transfer function.  Top left: supply--return $\Delta T$
+  vs setpoint error relative to $T_\mathrm{mid}$ (hexbin density).  Top
+  right: cross-correlation lag between setpoint rate and $T_\mathrm{mid}$ rate.
+  Bottom left: mirror response to setpoint step events.  Bottom right:
+  per-night setpoint vs ESS~113 scatter (20 nights shown).}
+\label{fig:transfer}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Model Validation}
+
+\subsection{First-Order Model}
+
+We test the standard first-order thermal model:
+\begin{equation}
+  \frac{dT_\mathrm{mirror}}{dt}
+    = \frac{T_\mathrm{setpoint} - T_\mathrm{mirror}}{\tau}
+\end{equation}
+by forward-simulating from the actual EAS setpoint trajectory and
+comparing with $T_\mathrm{mid}$ ($z_\mathrm{norm} = 0.5$).  The
+simulation uses 1-min timesteps with the actual (forward-filled)
+setpoint as input.
+
+\subsection{Time Constant Estimation}
+
+We sweep $\tau$ from 0.25 to 6.0\,h in 0.25\,h steps and compute the
+RMSE against the mirror mean for each night.
+
+\begin{table}[htbp]
+\centering
+\caption{Time constant estimation results (149 nights).}
+\label{tab:tau}
+\begin{tabular}{lc}
+\toprule
+Metric & Value \\
+\midrule
+Per-night median $\tau_\mathrm{glycol}$ (vs $T_\mathrm{mid}$) & 2.50\,h \\
+Per-night median $\tau_\mathrm{air}$ & 12.0\,h \\
+Median RMSE glycol-only & 0.059\,\textdegree C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Using $T_\mathrm{mid}$ as the reference temperature (instead of the
+back surface or the AboveMirror glycol sensor) gives well-constrained
+fits:
+\begin{itemize}
+  \item The glycol-only model achieves median RMSE = 0.059\,\textdegree C
+    with $\tau_\mathrm{glycol}$ median = 2.5\,h.
+  \item The two-input model (glycol + air convection) yields
+    $\tau_\mathrm{glycol}$ median = 2.5\,h and $\tau_\mathrm{air}$
+    median = 12\,h.
+  \item $T_\mathrm{mid}$ represents the bulk glass temperature at
+    $z_\mathrm{norm} = 0.5$, midway between the glycol-cooled back
+    surface and the air-facing optical surface.
+\end{itemize}
+
+The shorter $\tau_\mathrm{glycol} = 2.5$\,h compared to the back
+surface value of 3.0\,h (Table~\ref{tab:tau_surface}) reflects the
+additional air-convection coupling experienced by the mid-level glass.
+The first-order model captures the bulk dynamics with high fidelity.
+
+\subsection{Recommended Time Constant}
+
+The optimal $\tau$ for the bulk glass ($T_\mathrm{mid}$) is
+\textbf{2.5\,h}, with surface-dependent values ranging from
+$\tau_\mathrm{back} = 3.0$\,h (glycol-dominated) to
+$\tau_\mathrm{front} = 2.0$\,h (air-coupled).  We recommend using
+$\tau = 2.5$\,h as the effective bulk time constant in the simulation
+model.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_model_validation.png}
+\caption{Model validation using $T_\mathrm{mid}$.  Top left:
+  $\tau_\mathrm{glycol}$ vs $\tau_\mathrm{air}$ per night (colored by
+  RMSE).  Top right: RMSE comparison between glycol-only and two-input
+  models.  Bottom left: example night comparing model fits.
+  Bottom right: per-night $\tau$ distributions.}
+\label{fig:validation}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_thermal_overview.png}
+\caption{Four example nights showing setpoint, ESS~113, $T_\mathrm{mid}$
+  ($\pm z\_gradient\_err/2$ shaded band), coolant supply/return, and the
+  first-order model fit.  Top left: lowest $\tau$ night.  Top right:
+  highest $\tau$ night.  Bottom left: best-fit night.
+  Bottom right: worst-fit night.}
+\label{fig:overview}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{EAS Actual Performance}
+
+We evaluate the current EAS controller performance by comparing
+$T_\mathrm{mid}$ against the target temperature
+$T_\mathrm{target} = \mathrm{ESS\,113} - 1.0$\,\textdegree C.
+
+\begin{table}[htbp]
+\centering
+\caption{EAS tracking performance (149 nights).}
+\label{tab:performance}
+\begin{tabular}{lc}
+\toprule
+Metric & Value \\
+\midrule
+Tracking error median ($T_\mathrm{mid}$ $-$ target) & $-0.23$\,\textdegree C \\
+Tracking error RMS (all timesteps) & 1.10\,\textdegree C \\
+Per-night RMS median & 0.74\,\textdegree C \\
+Per-night $\pm$0.3\,\textdegree C compliance median & 26.5\% \\
+EAS setpoint rate p95 & 1.80\,\textdegree C/h \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The error distribution (Figure~\ref{fig:performance}, top left) is
+asymmetric, skewed toward negative values (mirror colder than target),
+consistent with the cold-is-preferred design philosophy.  The per-night
+RMS of 0.74\,\textdegree C (Figure~\ref{fig:performance}, bottom left)
+reflects the fundamental challenge: the mirror's 2.5\,h thermal time
+constant limits how fast it can track ambient changes.
+
+The $\pm$0.3\,\textdegree C compliance of 26.5\% (Figure~\ref{fig:performance},
+bottom right) shows significant room for improvement.  The setpoint rate
+distribution (Figure~\ref{fig:performance}, top right) confirms that the
+EAS already operates beyond the 0.7\,\textdegree C/h limit we impose
+in simulation.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_eas_performance.png}
+\caption{EAS actual performance.  Top left: tracking error distribution
+  ($T_\mathrm{mid} - (\mathrm{ESS\,113} - 1.0)$\,\textdegree C).  Top right:
+  EAS setpoint rate distribution with $\pm$0.7\,\textdegree C/h markers.
+  Bottom left: per-night RMS distribution.  Bottom right: per-night
+  $\pm$0.3\,\textdegree C compliance.}
+\label{fig:performance}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{M1M3 Sensor Map and Gradient-Fit Decomposition}
+\label{sec:sensor_map}
+
+The M1M3 mirror is instrumented with 146 thermocouples distributed
+across four scanners (ESS~114--117), three depth levels (Front, Middle,
+Back), and six azimuthal sectors (A--F).  The glycol thermal control
+system uses 96~Fan Coil Units (FCUs) on the back surface of the mirror.
+ESS~113 is a humidity/temperature sensor measuring the cell air above
+the mirror---it is \emph{not} on the glass surface.
+
+Figure~\ref{fig:sensormap} shows the spatial layout.  The left panel
+is the top view ($x$--$y$ plane), showing thermocouple locations
+colored by depth level and FCU positions.  The right panel is the
+side view (radial--$z_\mathrm{norm}$ plane), illustrating the glass
+cross-section with the M3 region (thinner, inner) and M1 region
+(thicker, outer).
+
+\subsection{Gradient-Fit Model}
+
+At each 1-min timestamp, a least-squares fit to the 96-thermocouple
+temperatures yields:
+\begin{equation}
+  T(x, y, z_\mathrm{norm})
+    = \mathrm{intercept}
+    + x\_gradient \cdot x
+    + y\_gradient \cdot y
+    + z\_gradient \cdot z_\mathrm{norm}
+  \label{eq:gradfit}
+\end{equation}
+where $z_\mathrm{norm} = 0$ (back, near FCUs), $0.5$ (middle), and
+$1.0$ (front, optical surface).  The intercept is the temperature at
+the mirror center at $z_\mathrm{norm} = 0$, i.e., the \textbf{back
+surface center temperature}.
+
+We define three virtual surface temperatures:
+\begin{align}
+  T_\mathrm{back}  &= \mathrm{intercept}
+    & (z_\mathrm{norm} = 0) \\
+  T_\mathrm{mid}   &= \mathrm{intercept} + 0.5 \times z\_gradient
+    & (z_\mathrm{norm} = 0.5) \\
+  T_\mathrm{front} &= \mathrm{intercept} + z\_gradient
+    & (z_\mathrm{norm} = 1.0)
+\end{align}
+The $z\_gradient$ represents the front-minus-back temperature
+difference through the glass.  The fit also provides
+$z\_gradient\_err$, the $1\sigma$ uncertainty on the through-glass
+gradient.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/m1m3_sensor_map.png}
+\caption{M1M3 sensor layout.  Left: top view showing 146
+  thermocouples (colored by depth level: Front=red, Middle=blue,
+  Back=green), 96~FCUs (gray squares), and ESS~113 (gold star).
+  Arrows indicate the gradient-fit directions.
+  Right: side cross-section with $z_\mathrm{norm}$ axis (0=back,
+  1=front), showing the thinner M3 and thicker M1 regions.}
+\label{fig:sensormap}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Surface--Air Coupling: Pre-Control}
+\label{sec:pre_control}
+
+Before the EAS activates the glycol setpoint, the mirror temperature
+is governed solely by convective coupling with the cell air (ESS~113).
+This pre-control period---typically several hours before sunset---provides
+a clean measurement of the air--mirror thermal relationship at each
+depth level.
+
+\subsection{Pre-Control Offsets}
+
+Figure~\ref{fig:pre_coupling} (top right) shows the distribution of
+$T_\mathrm{surface} - \mathrm{ESS\,113}$ for each surface during
+the pre-control period.  All three surfaces are close to ESS~113,
+with small systematic offsets:
+\begin{itemize}
+  \item $T_\mathrm{front}$ is closest to ESS~113 (the optical surface
+    is in direct convective contact with cell air).
+  \item $T_\mathrm{back}$ tends to be slightly cooler (residual
+    glycol cooling from the previous night).
+\end{itemize}
+
+The top-left panel shows $T_\mathrm{front}$ vs ESS~113 colored by
+the through-glass gradient ($z\_gradient$), confirming tight coupling
+between the optical surface and cell air when the glycol is off.
+Per-night median offsets (bottom-left boxplot) show the inter-night
+variability, and the bottom-right panel shows an example pre-control
+night with all three surfaces tracking ESS~113 closely.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_surface_coupling_pre.png}
+\caption{Surface--air coupling during pre-control (no glycol).
+  Top left: $T_\mathrm{front}$ vs ESS~113 scatter colored by
+  $z\_gradient$.  Top right: offset distributions for all three
+  surfaces.  Bottom left: per-night median offset boxplots.
+  Bottom right: example night showing $T_\mathrm{back}$,
+  $T_\mathrm{mid}$, $T_\mathrm{front}$, and ESS~113.}
+\label{fig:pre_coupling}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Surface--Air Coupling: Active Control}
+\label{sec:active_control}
+
+Once the glycol activates, the setpoint drives the back surface
+away from air equilibrium, creating a through-glass gradient.
+Figure~\ref{fig:active_coupling} characterizes this behavior.
+
+\subsection{Surface Offset Evolution}
+
+The top-right panel of Figure~\ref{fig:active_coupling} shows the
+median (with IQR band) of $T_\mathrm{surface} - \mathrm{ESS\,113}$
+as a function of time since setpoint activation.  Key observations:
+\begin{itemize}
+  \item All surfaces are driven below ESS~113 by the glycol cooling,
+    consistent with the $-1.0$\,\textdegree C cold bias.
+  \item $T_\mathrm{back}$ responds first and most strongly (closest
+    to the FCUs).
+  \item $T_\mathrm{front}$ lags and has a smaller offset, as the
+    thermal gradient must propagate through the glass.
+  \item The offsets stabilize after $\sim$3--4\,h, consistent with
+    the $\tau \approx 3$\,h time constant.
+\end{itemize}
+
+\subsection{Through-Glass Gradient vs Setpoint Rate}
+
+The bottom-left panel shows $z\_gradient$ vs the setpoint rate of
+change.  When the setpoint is decreasing rapidly (aggressive cooling),
+$z\_gradient$ tends negative---the back surface cools faster than the
+front, as expected from the FCU proximity.  When the setpoint is
+stable, $z\_gradient$ clusters near zero.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_surface_coupling_active.png}
+\caption{Surface--air coupling during active control.  Top left:
+  $T_\mathrm{front}$ vs ESS~113 colored by hours since activation.
+  Top right: surface offset evolution (median $\pm$ IQR across nights).
+  Bottom left: $z\_gradient$ vs setpoint rate (hexbin).
+  Bottom right: example night with all surfaces and setpoint.}
+\label{fig:active_coupling}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Glycol Response by Surface Depth}
+\label{sec:glycol_depth}
+
+The glycol system acts on the back surface through the FCUs.  The
+thermal signal must propagate through the glass to reach the optical
+surface.  We characterize this depth-dependent response using
+per-surface cross-correlation lag and time constant fits.
+
+\subsection{Cross-Correlation Lag}
+
+Figure~\ref{fig:glycol_depth} (top left) shows the distribution of
+cross-correlation lag between the setpoint rate and the rate of change
+of each surface temperature.  The back surface responds first
+(shortest lag), and the front surface last, as expected from the
+thermal diffusion through the glass.
+
+\subsection{Time Constant by Depth}
+
+We fit the glycol-only first-order model
+$dT_\mathrm{surface}/dt = (T_\mathrm{sp} - T_\mathrm{surface})/\tau$
+independently for each surface level.  The results
+(Figure~\ref{fig:glycol_depth}, top right) show:
+
+\begin{table}[htbp]
+\centering
+\caption{Per-surface time constant from glycol-only first-order fit.}
+\label{tab:tau_surface}
+\begin{tabular}{lcc}
+\toprule
+Surface & $\tau$ median (h) & $\tau$ mean (h) \\
+\midrule
+$T_\mathrm{back}$  ($z_\mathrm{norm}=0$)   & 3.0 & 3.8 \\
+$T_\mathrm{mid}$   ($z_\mathrm{norm}=0.5$) & 2.5 & 3.4 \\
+$T_\mathrm{front}$ ($z_\mathrm{norm}=1.0$) & 2.0 & 2.9 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The counterintuitive result that $\tau_\mathrm{front} < \tau_\mathrm{back}$
+reflects that the front surface is also coupled to cell air convection
+(ESS~113), which acts as a second thermal input.  The glycol-only model
+absorbs this additional coupling into a shorter effective $\tau$.
+The back surface, shielded from air convection by the glass itself,
+is governed almost entirely by the glycol time constant.
+
+\subsection{Glycol Forcing and Through-Glass Gradient}
+
+The bottom panels of Figure~\ref{fig:glycol_depth} show the
+relationship between glycol forcing and the through-glass gradient:
+\begin{itemize}
+  \item Bottom left: $z\_gradient$ vs (setpoint $-$ $T_\mathrm{back}$).
+    When the glycol is actively cooling (setpoint $\ll T_\mathrm{back}$),
+    the back cools faster than the front, creating a positive
+    $z\_gradient$ (front warmer than back).
+  \item Bottom right: $z\_gradient$ vs coolant supply--return
+    $\Delta T$.  Strong cooling (large negative $\Delta T_\mathrm{coolant}$)
+    correlates with positive $z\_gradient$.
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_glycol_surface_response.png}
+\caption{Glycol response by surface depth.  Top left: cross-correlation
+  lag (setpoint rate $\to$ surface rate) per depth level.  Top right:
+  $\tau_\mathrm{back}$ vs $\tau_\mathrm{front}$ scatter per night.
+  Bottom left: $z\_gradient$ vs glycol forcing (setpoint $-$ $T_\mathrm{back}$).
+  Bottom right: $z\_gradient$ vs coolant heat flux proxy
+  (supply $-$ return $\Delta T$).}
+\label{fig:glycol_depth}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Gradient Overview: Example Nights}
+\label{sec:gradient_overview}
+
+Figure~\ref{fig:gradient_overview} shows four example nights selected
+by the magnitude of the through-glass gradient $|z\_gradient|$:
+largest, smallest, median, and 25th percentile.  Each panel shows the
+setpoint, ESS~113, and the three surface temperatures
+($T_\mathrm{back}$, $T_\mathrm{mid}$, $T_\mathrm{front}$) with the
+$\pm z\_gradient\_err$ uncertainty band shaded on $T_\mathrm{front}$.
+
+Key observations:
+\begin{itemize}
+  \item On nights with large $|z\_gradient|$, the front and back
+    surfaces separate by $\sim$0.3--0.5\,\textdegree C during active
+    cooling, with the front remaining warmer.
+  \item On nights with small $|z\_gradient|$, all three surfaces
+    track each other closely, indicating near-isothermal conditions
+    through the glass.
+  \item The $z\_gradient\_err$ band is typically
+    $\pm$0.1--0.2\,\textdegree C, confirming that the gradient
+    decomposition is well-constrained by the 96 thermocouples.
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/mirror_gradient_overview.png}
+\caption{Gradient overview: four example nights selected by
+  $|z\_gradient|$ magnitude.  Each panel shows setpoint (black),
+  ESS~113 (dotted), and $T_\mathrm{back}$ (green), $T_\mathrm{mid}$
+  (blue), $T_\mathrm{front}$ (red) with $\pm z\_gradient\_err$
+  shaded band.}
+\label{fig:gradient_overview}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Setpoint--Surface Coupling: Inner Ring vs Outer Ring}
+\label{sec:ring_coupling}
+
+The gradient-fit decomposition (Section~\ref{sec:glycol_depth}) captures
+the average through-glass behavior, but the 96~thermocouples span a
+wide range of radii---from the thin M3 inner region ($r \approx 0.56$\,m,
+glass thickness 0.24\,m) to the thick M1 outer region
+($r > 3.5$\,m, glass thickness 0.74\,m).  To resolve the radial
+dependence of the glycol coupling, we use \textbf{raw thermocouple
+readings} (not the gradient-fit decomposition) averaged over two
+concentric rings at two depth levels.
+
+\subsection{Data and Method}
+
+The inner ring uses 14 MTCIW sensors at $r \approx 0.56$\,m (6~front,
+2~middle, 6~back), averaged into \texttt{inner\_front} and
+\texttt{inner\_back}.  The outer ring uses all sensors at $r > 3.5$\,m,
+similarly averaged.  These are merged with the ESS~113, setpoint, and
+dome status from the thermal parquet (July 2025+) and a supplementary
+ESS~113 query (May--June 2025), yielding 155 valid nights with
+concurrent setpoint and thermocouple data.
+
+For each night and each of the four surfaces (inner front, inner back,
+outer front, outer back), we:
+\begin{enumerate}
+  \item Fit the first-order model $dT/dt = (T_\mathrm{sp} - T)/\tau$
+    by grid search over $\tau \in [0.5, 12]$\,h in 0.25\,h steps.
+  \item Compute the cross-correlation lag between the setpoint rate
+    and the surface temperature rate.
+\end{enumerate}
+
+\subsection{Time Constant by Ring and Depth}
+
+\begin{table}[htbp]
+\centering
+\caption{Setpoint-to-surface thermal coupling: raw thermocouple results
+  (155~nights, cleaned setpoint---gaps $> 5$\,min excluded).}
+\label{tab:ring_coupling}
+\begin{tabular}{lccc}
+\toprule
+Surface & $\tau$ median (h) & Lag median (min) & RMSE median (\textdegree C) \\
+\midrule
+Inner front ($r \approx 0.56$\,m, $z=1$) & 2.00 & 4 & 0.098 \\
+Inner back  ($r \approx 0.56$\,m, $z=0$) & 3.00 & 9 & 0.066 \\
+Outer front ($r > 3.5$\,m, $z=1$) & 2.00 & 3 & 0.105 \\
+Outer back  ($r > 3.5$\,m, $z=0$) & 3.00 & 6 & 0.070 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The results (Table~\ref{tab:ring_coupling}, Figure~\ref{fig:ring_tau})
+reveal clear physical trends:
+\begin{itemize}
+  \item \textbf{Front surfaces respond faster than back surfaces} at
+    both rings (inner: 2.0 vs 3.0\,h; outer: 2.0 vs 3.0\,h).
+    This confirms the gradient-fit finding (Section~\ref{sec:glycol_depth})
+    and reflects the dual coupling of the front surface to both glycol
+    and cell air convection.
+  \item \textbf{Back surfaces converge at $\tau = 3.0$\,h} regardless
+    of ring radius, suggesting that the glycol-to-back coupling is
+    dominated by the FCU contact resistance rather than glass thickness.
+  \item \textbf{The back surfaces are the thermal bottleneck}:
+    $\tau = 3.0$\,h at both rings, with the outer back having the
+    highest RMSE (0.070\,\textdegree C) and longest lag (6\,min).
+  \item \textbf{Front surfaces respond in $\sim$2\,h} at both rings,
+    with lags of only 3--4\,min, due to the additional convective
+    coupling with cell air.
+  \item \textbf{Inner back has the lowest RMSE} (0.066\,\textdegree C),
+    confirming that the thin-glass back surface most directly reflects
+    the glycol setpoint.
+\end{itemize}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/setpoint_surface_tau_lag.png}
+\caption{Setpoint-to-surface coupling: $\tau$ and lag.  Top left:
+  $\tau$ distributions by surface.  Top right: $\tau$ boxplots by
+  ring $\times$ depth.  Bottom left: cross-correlation lag distributions.
+  Bottom right: $\tau_\mathrm{inner\_back}$ vs
+  $\tau_\mathrm{outer\_back}$ (same depth, different ring thickness).}
+\label{fig:ring_tau}
+\end{figure}
+
+\subsection{Through-Glass Gradient by Ring}
+
+The through-glass temperature difference (front $-$ back) is near zero
+on average at both rings (inner median: $+0.002$\,\textdegree C, outer
+median: $-0.006$\,\textdegree C), but the inner ring shows larger
+scatter ($\sigma = 0.18$\,\textdegree C vs $0.15$\,\textdegree C for
+the outer ring).
+
+Figure~\ref{fig:ring_gradient} (top right, bottom left) shows that
+when the glycol is strongly cooling (setpoint $\ll T_\mathrm{back}$),
+the inner ring develops a clear negative front-back gradient (back
+cooling faster than front), reaching $\pm 0.5$\,\textdegree C.
+The outer ring shows a tighter gradient range ($\pm 0.3$\,\textdegree C),
+as the thicker glass dampens the through-thickness temperature difference.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/setpoint_glass_gradient.png}
+\caption{Through-glass gradient: inner ring (thin, 0.24\,m) vs outer
+  ring (thick, 0.74\,m).  Top left: front$-$back $\Delta T$
+  distributions.  Top right: inner ring glass $\Delta T$ vs glycol
+  forcing (hexbin).  Bottom left: outer ring glass $\Delta T$ vs glycol
+  forcing.  Bottom right: per-night median inner vs outer gradient.}
+\label{fig:ring_gradient}
+\end{figure}
+
+\subsection{Gradient--Forcing Slope: Safe Setpoint Range}
+
+To determine the glycol forcing that can be applied without creating
+excessive through-glass gradients, we fit the relationship
+\begin{equation}
+  \Delta T_\mathrm{glass} = T_\mathrm{front} - T_\mathrm{back}
+    = \alpha \cdot (T_\mathrm{sp} - T_\mathrm{back}) + \beta
+  \label{eq:grad_slope}
+\end{equation}
+using Theil-Sen robust regression (resistant to outliers) on 80{,}361
+minute-level samples per ring (Figure~\ref{fig:grad_slope}).
+
+\begin{table}[htbp]
+\centering
+\caption{Theil-Sen robust fit: through-glass gradient vs glycol forcing.}
+\label{tab:grad_slope}
+\begin{tabular}{lccc}
+\toprule
+Gradient measure & Slope $\alpha$ (\textdegree C/\textdegree C) & Intercept $\beta$ (\textdegree C) & $N$ samples \\
+\midrule
+$z\_gradient$ (96-TC fit) & 0.223 & $-0.011$ & 86{,}472 \\
+Inner ring (0.24\,m glass) & 0.212 & $+0.006$ & 80{,}361 \\
+Outer ring (0.74\,m glass) & 0.181 & $+0.004$ & 80{,}361 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The slope $\alpha$ gives the fraction of the glycol forcing that
+appears as a through-glass gradient.  All three measures are consistent:
+$\alpha \approx 0.18$--$0.22$\,\textdegree C/\textdegree C.  The
+96-thermocouple $z\_gradient$ (which averages over all radii) has the
+steepest slope (0.223), while the inner ring raw TCs give 0.212 and
+the outer ring gives 0.181---the thinner inner glass transmits more of the
+forcing as a gradient.
+
+Using these slopes, we can infer the safe forcing range for a given
+gradient threshold:
+
+\begin{table}[htbp]
+\centering
+\caption{Maximum glycol forcing ($T_\mathrm{sp} - T_\mathrm{back}$)
+  to stay within gradient limits.}
+\label{tab:safe_forcing}
+\begin{tabular}{lccc}
+\toprule
+$|\Delta T_\mathrm{glass}|$ limit & $z\_gradient$ forcing & Inner ring forcing & Outer ring forcing \\
+\midrule
+0.1\,\textdegree C & $\pm$0.4\,\textdegree C & $\pm$0.5\,\textdegree C & $\pm$0.6\,\textdegree C \\
+0.2\,\textdegree C & $\pm$0.8\,\textdegree C & $\pm$1.0\,\textdegree C & $\pm$1.1\,\textdegree C \\
+0.3\,\textdegree C & $\pm$1.3\,\textdegree C & $\pm$1.4\,\textdegree C & $\pm$1.7\,\textdegree C \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+For the typical EAS cold bias of $-1.0$\,\textdegree C, the expected
+glass gradient is $\sim$0.2\,\textdegree C (all measures)---well within
+safe limits.  Aggressive transient forcing of $-5$\,\textdegree C (as
+seen during rapid cool-downs) would produce $\sim$1\,\textdegree C
+gradients at the inner ring.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/setpoint_gradient_robust_fit.png}
+\caption{Through-glass gradient vs glycol forcing
+  ($T_\mathrm{sp} - T_\mathrm{back}$) with Theil-Sen robust linear
+  fit (red line).  Left: 96-TC gradient-fit $z\_gradient$
+  (slope = 0.223).  Center: inner ring raw TCs (0.24\,m glass,
+  slope = 0.212).  Right: outer ring raw TCs (0.74\,m glass,
+  slope = 0.181).}
+\label{fig:grad_slope}
+\end{figure}
+
+\subsection{Glycol Coolant: Active vs Passive Operation}
+\label{sec:coolant_coupling}
+
+The glycol coolant loop has 97\% time coverage, while setpoint commands
+cover only 8.9\% of the data.  The coolant circulates continuously,
+but does its heat flux actually drive the mirror temperature?
+
+\subsubsection{Coolant $\Delta T$ Does Not Predict Mirror Cooling Rate}
+
+We test the causal relationship by correlating the coolant heat flux
+proxy ($\Delta T_\mathrm{coolant} = T_\mathrm{supply} - T_\mathrm{return}$)
+with the 5-minute smoothed mirror cooling rate
+$dT_\mathrm{mirror}/dt$ (Figure~\ref{fig:coolant}).
+
+\begin{table}[htbp]
+\centering
+\caption{Pearson correlation $r$ between mirror cooling rate
+  ($dT/dt$ inner back) and candidate drivers.}
+\label{tab:coolant_corr}
+\begin{tabular}{lcc}
+\toprule
+Driver & Period & $r$ \\
+\midrule
+Setpoint $-$ $T_\mathrm{back}$ & Active & \textbf{0.577} \\
+Coolant $\Delta T$ (supply $-$ return) & Active & 0.075 \\
+Coolant $\Delta T$ (supply $-$ return) & Passive & 0.024 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The results (Table~\ref{tab:coolant_corr}) are unambiguous:
+\begin{itemize}
+  \item The \textbf{setpoint error strongly predicts} the mirror cooling
+    rate ($r = 0.577$, Figure~\ref{fig:coolant} bottom left).  When
+    the setpoint is far below the mirror, the mirror cools at up to
+    $-1.5$\,\textdegree C/h; near equilibrium, $dT/dt \approx 0$.
+    The Theil-Sen slope is 0.24\,(°C/h)/°C, consistent with
+    $\tau \approx 1/0.24 \approx 4$\,h.
+  \item The \textbf{coolant $\Delta T$ does not predict} the mirror cooling
+    rate---neither during active ($r = 0.075$) nor passive
+    ($r = 0.024$) operation.  Despite coolant $\Delta T$ reaching
+    $-6$\,\textdegree C during active cooling, it shows essentially
+    no linear correlation with $dT_\mathrm{mirror}/dt$.
+\end{itemize}
+
+\subsubsection{Interpretation}
+
+The coolant $\Delta T$ reflects how much heat the glycol \emph{has
+already absorbed} from the mirror, not how much cooling it will
+\emph{deliver next}.  The 96~FCUs modulate their local flow and fan
+speed based on the commanded setpoint---the setpoint governs
+\emph{how much} of the available chiller capacity is directed at
+the mirror.  The coolant supply--return $\Delta T$ is therefore a
+\emph{consequence} of the setpoint-driven cooling, not its cause.
+
+\subsubsection{Energy Balance}
+
+Despite the lack of predictive correlation, the energy balance
+relates the coolant $\Delta T$ to the mirror's thermal state.
+The heat extraction rate through the glycol loop is:
+\begin{equation}
+  \dot{Q} = \dot{m}\, c_p\, (T_\mathrm{return} - T_\mathrm{supply})
+  \label{eq:qdot}
+\end{equation}
+where $\dot{m}$ is the mass flow rate and $c_p$ the specific heat.
+For 50\% propylene glycol at $\sim$10\,\textdegree C:
+$\rho = 1040$\,kg/m$^3$, $c_p = 3560$\,J/(kg\,K).
+
+Equating coolant heat extraction to the mirror's temperature change:
+\begin{equation}
+  \dot{m}\, c_p\, |\Delta T_\mathrm{coolant}|
+    = M_\mathrm{mirror}\, c_\mathrm{glass}\,
+      \left|\frac{dT_\mathrm{mirror}}{dt}\right|
+  \label{eq:mirror_energy}
+\end{equation}
+For M1M3: $M_\mathrm{mirror} \approx 30{,}000$\,kg,
+$c_\mathrm{glass} \approx 670$\,J/(kg\,K) (borosilicate).
+From $\tau = 3$\,h, the effective thermal conductance is:
+\begin{equation}
+  h_\mathrm{eff}\, A
+    = \frac{M_\mathrm{mirror}\, c_\mathrm{glass}}{\tau}
+    = \frac{30{,}000 \times 670}{10{,}800}
+    \approx 1860\;\mathrm{W/K}
+  \label{eq:heff}
+\end{equation}
+At a typical cooling rate of $-1.0$\,\textdegree C/h, the required
+heat extraction is $\dot{Q} \approx 5.6$\,kW.  With
+$\Delta T_\mathrm{coolant} = -4$\,\textdegree C, this implies
+$\dot{m} \approx 0.4$\,kg/s ($\sim$6\,GPM across 96~FCUs).
+
+\subsubsection{Passive Circulation}
+
+During passive operation (no setpoint, 91\% of data),
+$\Delta T_\mathrm{coolant} \approx 0$\,\textdegree C
+(Figure~\ref{fig:coolant}, top left).  The glycol circulates to
+maintain hydraulic readiness but the FCUs are throttled to minimum
+flow, extracting negligible heat.  The mirror temperature during
+these periods drifts primarily in response to ambient air convection,
+not the coolant system ($r = 0.024$).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/coolant_surface_coupling.png}
+\caption{Does coolant heat flux drive the mirror?  Top left: coolant
+  $\Delta T$ distribution---passive (green, near zero) vs active (blue,
+  reaching $-6$\,\textdegree C).  Top right: $dT/dt$ vs coolant
+  $\Delta T$ during active control ($r = 0.075$, no correlation).
+  Bottom left: $dT/dt$ vs setpoint error ($r = 0.577$, strong
+  correlation).  Bottom right: $dT/dt$ vs coolant $\Delta T$ during
+  passive circulation ($r = 0.024$, no correlation).
+  The setpoint error is the driver; the coolant $\Delta T$ is a
+  consequence.}
+\label{fig:coolant}
+\end{figure}
+
+\subsection{Example Nights and Model Quality}
+
+Figure~\ref{fig:ring_examples} shows four example nights: fastest and
+slowest outer-ring $\tau$, best and median model fit.  The first-order
+model (dashed black) captures the thermal response well for most nights.
+On nights with large $\tau$ (top right), the surfaces barely respond to
+the setpoint---these are typically nights where the setpoint changes
+are small and the mirror is already near equilibrium.
+
+Figure~\ref{fig:ring_rmse} summarizes the model fit quality.  The
+RMSE distributions (top left) cluster below 0.25\,\textdegree C for
+all four surfaces, confirming that the first-order model captures
+the dominant physics even at individual thermocouple locations.  The
+$\tau_\mathrm{inner\_front}$ vs $\tau_\mathrm{outer\_front}$ scatter
+(bottom left) shows that the outer optical surface consistently
+requires a longer time constant, reflecting the thicker glass path.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/setpoint_surface_examples.png}
+\caption{Four example nights showing setpoint (black), ESS~113 (dotted),
+  and all four surfaces (inner front/back, outer front/back).  The
+  dashed line shows the first-order model fit for the outer back
+  surface.  Panels selected by: fastest $\tau$ (top left), slowest
+  $\tau$ (top right), best RMSE (bottom left), median RMSE
+  (bottom right).}
+\label{fig:ring_examples}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=\textwidth]{../figures/setpoint_surface_rmse.png}
+\caption{Model fit quality by ring $\times$ depth.  Top left: RMSE
+  distributions.  Top right: RMSE boxplots.  Bottom left:
+  $\tau_\mathrm{inner\_front}$ vs $\tau_\mathrm{outer\_front}$ scatter.
+  Bottom right: RMSE inner front vs RMSE outer front.}
+\label{fig:ring_rmse}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Implications for Control Simulation}
+
+\begin{enumerate}
+  \item \textbf{Cold bias should be 1.0\,\textdegree C}, not
+    0.3\,\textdegree C.  The EAS targets $\mathrm{ESS\,113} - 1.0$\,\textdegree C.
+
+  \item \textbf{Bulk time constant is $\tau = 2.5$\,h} (for $T_\mathrm{mid}$).
+    Surface-dependent: $\tau_\mathrm{back} = 3.0$\,h,
+    $\tau_\mathrm{front} = 2.0$\,h.
+
+  \item \textbf{Rate limit of 0.7\,\textdegree C/h is conservative.}
+    The EAS routinely exceeds this (p95 = 1.8\,\textdegree C/h),
+    confirming that the soft-rate-penalty approach (allowing occasional
+    violations up to $\sim$2\,\textdegree C/h) is physically realistic.
+
+  \item \textbf{The first-order model is excellent for the bulk mirror}
+    when validated against $T_\mathrm{mid}$ ($z_\mathrm{norm} = 0.5$).
+
+  \item \textbf{Current EAS achieves 26.5\% within $\pm$0.3\,\textdegree C.}
+    This is the baseline to beat with improved forecasting and control.
+
+  \item \textbf{The optical surface ($T_\mathrm{front}$) is coupled to
+    both glycol and cell air.}  Its effective $\tau_\mathrm{front} = 2.0$\,h
+    is shorter than $\tau_\mathrm{back} = 3.0$\,h because convective
+    coupling with ESS~113 provides a second thermal input.  A two-input
+    model may better represent the front-surface dynamics.
+
+  \item \textbf{The through-glass gradient $z\_gradient$ is a diagnostic
+    for control aggressiveness.}  Large $|z\_gradient|$ ($> 0.3$\,\textdegree C)
+    indicates the glycol is driving the back surface faster than the
+    front can follow.  Future controllers could monitor $z\_gradient$
+    as a constraint to limit thermal stress.
+
+  \item \textbf{Back surfaces are the thermal bottleneck}
+    ($\tau = 3.0$\,h at both rings), while front surfaces respond in
+    $\sim$2\,h due to additional air convection coupling.  The inner
+    back has the lowest RMSE (0.070\,\textdegree C), confirming it
+    most directly reflects the glycol setpoint.
+
+  \item \textbf{Glass thickness affects the front surface more than the
+    back.}  Back-surface $\tau$ is the same at both rings (3.0\,h),
+    suggesting FCU contact resistance dominates over glass conduction
+    for the glycol-facing surface.
+\end{enumerate}
+
+%----------------------------------------------------------------------
+\section{Conclusions}
+
+\begin{enumerate}
+  \item The EAS targets $T_\mathrm{setpoint} = \mathrm{ESS\,113} -
+    1.0$\,\textdegree C, updating every 3\,min at rates up to
+    1.8\,\textdegree C/h (p95).
+
+  \item The glycol system responds to setpoint changes with a
+    4-minute lag (at $T_\mathrm{mid}$).  The bulk glass temperature
+    tracks the setpoint within $-0.07$\,\textdegree C (median offset).
+
+  \item The first-order thermal model with $\tau = 2.5$\,h
+    achieves median RMSE = 0.059\,\textdegree C against
+    $T_\mathrm{mid}$---an excellent fit that validates the model
+    structure.
+
+  \item The bulk glass time constant is $\tau \approx 2.5$\,h
+    ($T_\mathrm{mid}$), with depth-dependent values from
+    $\tau_\mathrm{back} = 3.0$\,h to $\tau_\mathrm{front} = 2.0$\,h.
+
+  \item The current EAS achieves per-night RMS = 0.74\,\textdegree C
+    and 26.5\% within $\pm$0.3\,\textdegree C---significant room for
+    improvement with better forecasting and control algorithms.
+
+  \item The gradient-fit decomposition resolves three depth levels
+    through the glass.  The effective time constant decreases from
+    $\tau_\mathrm{back} = 3.0$\,h to $\tau_\mathrm{front} = 2.0$\,h,
+    reflecting the dual coupling of the optical surface to both glycol
+    and cell air convection.
+
+  \item The through-glass gradient $z\_gradient$ is typically
+    $< 0.3$\,\textdegree C but can reach 0.5\,\textdegree C during
+    aggressive cooling.  The gradient uncertainty
+    ($z\_gradient\_err \approx 0.1$--0.2\,\textdegree C) confirms
+    the decomposition is well-constrained.
+
+  \item Pre-control (no glycol), all three surfaces track ESS~113
+    closely with small offsets, confirming good air--mirror thermal
+    equilibrium before sunset.
+
+  \item Raw thermocouple analysis of inner ring ($r \approx 0.56$\,m,
+    glass thickness 0.24\,m) vs outer ring ($r > 3.5$\,m, 0.74\,m)
+    over 155~nights (with cleaned setpoint signal) shows: back
+    surfaces converge at $\tau = 3.0$\,h regardless of radius (FCU
+    contact resistance dominates), while front surfaces respond in
+    $\sim$2\,h due to air convection coupling.  Model RMSE is
+    0.07--0.10\,\textdegree C across all four ring$\times$depth
+    combinations.
+
+  \item Theil-Sen robust regression of the through-glass gradient
+    vs glycol forcing yields slopes of 0.21\,\textdegree C/\textdegree C
+    (inner) and 0.18\,\textdegree C/\textdegree C (outer).  This
+    means the EAS's typical $-1$\,\textdegree C forcing produces
+    only $\sim$0.2\,\textdegree C glass gradient.  To keep gradients
+    below 0.3\,\textdegree C, forcing should stay within
+    $\pm$1.4\,\textdegree C (inner) or $\pm$1.7\,\textdegree C (outer).
+\end{enumerate}
+
+\end{document}

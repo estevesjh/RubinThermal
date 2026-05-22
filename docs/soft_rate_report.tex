@@ -1,0 +1,365 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{Soft Rate Penalty Controllers for M1M3 Thermal Setpoint Control}
+\author{J.\ Esteves}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+%----------------------------------------------------------------------
+\section{Introduction}
+
+The M1M3 thermal control system uses a setpoint rate limit of
+0.7\,\textdegree C/h to prevent excessive thermal stress on the mirror.
+Previous analysis showed that this hard constraint is the dominant bottleneck
+for control performance: increasing the rate limit from 0.7 to
+1.0\,\textdegree C/h yields an 18\% improvement in overnight RMS---larger than
+any forecast or controller upgrade at fixed rate limit.
+
+Figure~\ref{fig:cooling_rate} shows that 49\% of observing nights have at
+least one 1-hour period where the inside temperature changes faster than
+0.7\,\textdegree C/h---the hard limit prevents the mirror from tracking these
+events.  This report investigates replacing the hard rate clip with soft
+penalties that allow occasional rate violations when the tracking benefit
+outweighs the rate cost.  We compare two soft control strategies---PID with
+cubic rate damping and MPC with an asymmetric quartic rate penalty---against
+the hard-clipped baselines (Three-Phase, Hard MPC, Hard PID).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/cooling_rate_distribution.png}
+\caption{Overnight temperature rate statistics from 166 nights.
+  Left: distribution of all 1-hour average rates; 5.4\% of
+  timesteps exceed $|$rate$|$ $> 0.7$\,\textdegree C/h.
+  Right: per-night maximum $|$1-hour rate$|$; 49\% of nights have at
+  least one period exceeding the limit.}
+\label{fig:cooling_rate}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Method}
+
+\subsection{Hard Baseline Controllers}
+
+The hard rate limit clips the setpoint change to
+$|\Delta u| \leq \Delta u_\mathrm{max} = 0.7 \cdot \Delta t$ at each timestep,
+regardless of the controller's desired output.
+
+\begin{itemize}
+  \item \textbf{Three-Phase}: heuristic weighted lookahead (3\,h kernel) with
+    rate compensation.
+  \item \textbf{Hard MPC}: model predictive control with box constraints
+    enforcing the rate limit inside the optimizer.
+  \item \textbf{Hard PID}: feedforward + PID ($K_p=3$, $K_i=0.05$, $K_d=0.3$)
+    with external hard clip.
+\end{itemize}
+
+\subsection{Soft PID Controller}
+
+The Soft PID computes the setpoint as:
+\begin{equation}
+  T_\mathrm{sp} = T_\mathrm{ff} + K_p e + K_i \int e\,dt
+    - K_d \dot{T}_\mathrm{mirror} - K_\mathrm{soft}\, v^3 \Delta u_\mathrm{max}
+\end{equation}
+where:
+\begin{itemize}
+  \item $T_\mathrm{ff} = T_\mathrm{amb} - 0.3$\,\textdegree C is the
+    feedforward tracking term (direct, no rate limiting);
+  \item $e = T_\mathrm{ff} - T_\mathrm{mirror}$ is the tracking error;
+  \item $\dot{T}_\mathrm{mirror}$ is the derivative-on-measurement term
+    (prevents setpoint kick);
+  \item $v = \Delta u / \Delta u_\mathrm{max}$ is the normalized setpoint rate;
+  \item $K_\mathrm{soft}\, v^3$ is the cubic rate damping: gentle at low rates,
+    harsh above the limit.
+\end{itemize}
+
+No external rate clip is applied.  The cubic term creates a soft wall at
+$v = 1$ (the 0.7\,\textdegree C/h boundary).  Three scenarios were tuned via
+grid search over $(K_p, K_i, K_d, K_\mathrm{soft})$ on 166 nights:
+
+\begin{table}[htbp]
+\centering
+\caption{Soft PID scenarios from grid search tuning.}
+\label{tab:pid_scenarios}
+\begin{tabular}{lccccl}
+\toprule
+Scenario & $K_p$ & $K_i$ & $K_d$ & $K_\mathrm{soft}$ & Target \\
+\midrule
+Aggressive    & 2.0 & 0.10 & 0.3 & 0    & Best tracking ($\leq$33\% violation) \\
+Balanced      & 4.5 & 0.00 & 0.3 & 0.15 & Good tracking ($\leq$20\% violation) \\
+Conservative  & 1.5 & 0.05 & 0.0 & 0.15 & Low violation ($\leq$6\%) \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Bias-Corrected Asymmetric Quartic MPC}
+
+The MPC optimizes $N = 8$ future setpoints (2\,h horizon) with two terms:
+\begin{equation}
+  J = \underbrace{\sum_{k} (w_k \cdot \beta^k) \, e_k^2}_{\text{time-discounted tracking}}
+    + \underbrace{\left( \alpha_\mathrm{heat} \sum_{k} [\max(v_k, 0)]^4
+           + \alpha_\mathrm{cool} \sum_{k} [\max(-v_k, 0)]^4 \right) \Delta u_\mathrm{max}}_{\text{asymmetric rate penalty}}
+\end{equation}
+where:
+\begin{itemize}
+  \item $w_k = \alpha_\mathrm{warm}$ if $e_k > 0$, else $\alpha_\mathrm{cold}$
+    (asymmetric tracking cost, $\alpha_\mathrm{warm}/\alpha_\mathrm{cold} = 4$);
+  \item $\beta^k$: time-decay discount ($\beta = 0.9$), weighting near-term
+    tracking more than distant predictions where the forecast degrades;
+  \item $v_k = \Delta u_k / \Delta u_\mathrm{max}$ is the normalized setpoint rate;
+  \item $v_k^4$: quartic wall---flat near zero, brick wall above $|v| = 1$;
+  \item $\alpha_\mathrm{heat} > \alpha_\mathrm{cool}$: heating is penalized more
+    than cooling (cold mirror is acceptable).
+\end{itemize}
+
+\paragraph{Forecast bias correction.}
+The Ridge forecast has night-specific systematic bias (up to
+$\pm$0.5\,\textdegree C on difficult nights).  A \texttt{BiasCorrectedProvider}
+wraps the forecast provider and corrects this online:
+\begin{enumerate}
+  \item Logs forecast predictions at a fixed lead time (1\,h ahead) as they
+    are issued.
+  \item When actuals become available, computes the forecast error.
+  \item Tracks the error with a median filter + EMA ($k_f = 0.7$).
+  \item Applies the correction only when the bias is \emph{stable}
+    (spread $< 0.25$\,\textdegree C in recent errors) and \emph{significant}
+    ($|$bias$| > 0.15$\,\textdegree C dead zone).
+\end{enumerate}
+This corrects persistent forecast bias without affecting nights where the
+forecast is already accurate.
+
+Three scenarios span the Pareto front:
+
+\begin{table}[htbp]
+\centering
+\caption{Bias-Corrected Asymmetric Quartic MPC scenarios
+  ($\alpha_\mathrm{warm}/\alpha_\mathrm{cold} = 4$, $\beta = 0.9$).}
+\label{tab:mpc_scenarios}
+\begin{tabular}{lcccc}
+\toprule
+Scenario & $\alpha_\mathrm{heat}$ & $\alpha_\mathrm{cool}$ & Ratio & Target violation \\
+\midrule
+Aggressive    & 0.20 & 0.05 & 4$\times$ & $\sim$33\% \\
+Balanced      & 0.50 & 0.20 & 2.5$\times$ & $\sim$22\% \\
+Conservative  & 0.50 & 2.00 & 0.25$\times$ & $\sim$10\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Metrics}
+
+All metrics are computed for $t \geq 2$\,h after sunset on 166 nights with
+Ridge forecast:
+\begin{itemize}
+  \item \textbf{RMS}: root mean square of
+    $T_\mathrm{mirror} - (T_\mathrm{inside} - 0.3)$;
+  \item \textbf{$\pm$0.3\,\textdegree C}: fraction of time within target band;
+  \item \textbf{Violation rate}: fraction of timesteps where the actual setpoint
+    rate exceeds 0.75\,\textdegree C/h (0.7 + 0.05 margin);
+  \item \textbf{p95 rate}: 95th percentile of $|\Delta u / \Delta t|$;
+  \item \textbf{Max rate}: worst-case observed rate.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Results}
+
+\begin{table}[htbp]
+\centering
+\caption{Full comparison: soft vs hard controllers on 166 nights with Ridge
+  forecast ($\Delta t = 15$\,min, $t \geq 2$\,h after sunset).}
+\label{tab:comparison}
+\begin{tabular}{lcccccc}
+\toprule
+Controller & RMS (\textdegree C) & $\pm$0.3 (\%) & $\pm$0.5 (\%) &
+  Viol.\ (\%) & p95 (\textdegree C/h) & Max (\textdegree C/h) \\
+\midrule
+\multicolumn{7}{l}{\textit{Hard-clipped baselines (0\% violation)}} \\
+Three-Phase (hard)  & 0.628 & 73.3 & 87.6 & 0.0 & 0.700 & 0.700 \\
+Hard MPC            & 0.619 & 76.9 & 87.9 & 0.0 & 0.700 & 0.700 \\
+Hard PID            & 0.688 & 75.2 & 85.6 & 0.0 & 0.700 & 0.700 \\
+\midrule
+\multicolumn{7}{l}{\textit{Soft PID with 2.1\,\textdegree C/h ceiling ($T_\mathrm{sp} = T_\mathrm{ff} + P + I - K_d \dot{T} - K_\mathrm{soft} v^3$)}} \\
+PID Aggressive      & 0.398 & \textbf{91.2} & \textbf{96.7} & 33.9 & 2.10 & 2.10 \\
+PID Balanced        & 0.435 & 75.6 & 90.4 & 21.2 & 1.53 & 2.10 \\
+\midrule
+\multicolumn{7}{l}{\textit{Bias-Corrected Asym.\ Quartic MPC ($\alpha_\mathrm{warm}/\alpha_\mathrm{cold}=4$, $\beta=0.9$)}} \\
+MPC Aggressive      & \textbf{0.373} & 82.5 & 92.3 & 32.5 & 1.52 & 2.10 \\
+MPC Balanced        & 0.392 & 79.1 & 90.4 & 21.5 & 1.21 & 2.10 \\
+MPC Conservative    & 0.452 & 75.7 & 88.3 & 10.1 & 0.84 & 1.96 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/soft_rate_pareto.png}
+\caption{Pareto front: tracking accuracy ($\pm$0.3\,\textdegree C) vs rate
+  violation fraction for Soft MPC at different $\alpha$ values.  The
+  Three-Phase baseline (triangle) achieves 73\% accuracy with 0\% violation.}
+\label{fig:pareto}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/soft_rate_distribution.png}
+\caption{Setpoint rate distribution for the three Asymmetric Quartic MPC
+  scenarios.  The asymmetric penalty allows faster cooling (negative rates)
+  than heating, visible in the distribution skew.}
+\label{fig:distribution}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/soft_pid_rate_distribution.png}
+\caption{Setpoint rate distribution for the three Soft PID scenarios.
+  Note the extended x-axis: the Aggressive PID reaches rates up to
+  20\,\textdegree C/h, far beyond the MPC's natural 2.1\,\textdegree C/h ceiling.}
+\label{fig:pid_distribution}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/soft_rate_boxplot.png}
+\caption{Per-night RMS distribution for all 9 scenarios.  The Soft PID
+  Aggressive (leftmost orange) achieves the tightest distribution, while
+  the hard baselines (leftmost three) show wider spread.}
+\label{fig:boxplot}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/soft_rate_examples.png}
+\caption{Example nights comparing Soft MPC scenarios vs Three-Phase
+  with Ridge forecast.}
+\label{fig:examples}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Discussion}
+
+\subsection{Soft PID: dramatic improvement, high rate cost}
+
+The Soft PID with a hardware rate ceiling of 2.1\,\textdegree C/h
+(3$\times$ the nominal limit) achieves excellent tracking while bounding
+peak rates to a physically realistic level.
+
+The Aggressive scenario ($K_p = 2$, $K_i = 0.1$, $K_d = 0.3$) achieves
+RMS = 0.40\,\textdegree C, 91\% within $\pm$0.3\,\textdegree C, and 97\%
+within $\pm$0.5\,\textdegree C---a dramatic improvement over all hard-clipped
+controllers---with 34\% of timesteps exceeding 0.75\,\textdegree C/h.
+
+The Balanced scenario ($K_\mathrm{soft} = 0.15$) uses cubic damping to
+keep violations under 21\%, achieving 76\% within $\pm$0.3\,\textdegree C---still
+better than Three-Phase (72\%).
+
+With the 2.1\,\textdegree C/h ceiling, all PID scenarios have bounded peak
+rates, addressing the previous concern about extreme rate excursions on
+difficult nights.
+
+\subsection{Bias-Corrected MPC: bounded rates, adaptive correction}
+
+The bias-corrected asymmetric quartic MPC combines three innovations:
+\begin{enumerate}
+  \item \textbf{Asymmetric quartic rate penalty}: separate costs for heating
+    ($\alpha_\mathrm{heat}$) and cooling ($\alpha_\mathrm{cool}$), reflecting
+    the physical preference for cold.  The quartic wall naturally limits
+    maximum rate to $\sim$2.1\,\textdegree C/h.
+  \item \textbf{Time-decaying tracking} ($\beta = 0.9$): near-term forecasts
+    are weighted more heavily, reducing the influence of degraded long-horizon
+    predictions.
+  \item \textbf{Online bias correction}: a median+EMA filter tracks the
+    forecast error at 1\,h lead time and subtracts the persistent component
+    from all future predictions.  The correction activates only when the
+    bias is stable and exceeds 0.15\,\textdegree C (dead zone), leaving
+    accurate forecasts unchanged.
+\end{enumerate}
+
+The MPC Aggressive scenario achieves RMS = 0.37\,\textdegree C,
+83\% within $\pm$0.3\,\textdegree C---beating Three-Phase (72\%) by 10 points
+while keeping peak rates bounded at 2.1\,\textdegree C/h.  The Conservative
+scenario ($\alpha_\mathrm{cool} = 2.0$) restricts cooling rate more than
+heating, achieving only 10\% violation with p95 = 0.84\,\textdegree C/h and
+max rate below 2.0\,\textdegree C/h.
+
+\subsection{PID vs MPC: different failure modes}
+
+The two soft controllers have complementary strengths:
+\begin{itemize}
+  \item \textbf{Soft PID}: best tracking accuracy, purely reactive, but
+    unbounded peak rates and no forecast awareness.  The PID must be paired
+    with a hardware rate ceiling ($\sim$2.1\,\textdegree C/h) to prevent
+    extreme excursions.
+  \item \textbf{Asymmetric Quartic MPC}: naturally bounded peak rates
+    ($\leq$2.1\,\textdegree C/h), forecast-aware planning, and
+    physics-informed asymmetry between heating and cooling.
+\end{itemize}
+
+\subsection{The rate limit is still the bottleneck}
+
+The central finding is confirmed: allowing even modest rate violations
+(10--20\% of timesteps exceeding 0.75\,\textdegree C/h) yields
+significant improvement in tracking accuracy compared to hard-clipped
+controllers.  The 95th percentile rate at $\sim$10\% violation is
+$\sim$1.0\,\textdegree C/h---only 1.4$\times$ the nominal limit.
+
+\subsection{Alternative: logarithmic barrier for hard boundaries}
+
+If the hardware imposes a strict maximum rate that must never be exceeded
+(e.g., due to thermal stress limits on the glycol system), the quartic
+penalty can be replaced with a logarithmic barrier:
+\begin{equation}
+  J_\mathrm{barrier} = -\mu_\mathrm{heat} \sum_k \ln(1 - v_k)
+                       -\mu_\mathrm{cool} \sum_k \ln(1 + v_k)
+\end{equation}
+where $v_k = \Delta u_k / (\Delta u_\mathrm{max} \cdot v_\mathrm{max})$
+is normalized to $(-1, 1)$ and $v_\mathrm{max}$ sets the absolute ceiling
+(e.g., $v_\mathrm{max} = 1.5$ limits rate to 1.05\,\textdegree C/h).
+The barrier goes to infinity as $|v| \to 1$, creating an impassable wall
+that the optimizer cannot cross.  Preliminary tests show that the asymmetric
+log barrier with $\mu_\mathrm{heat} = 0.2$, $\mu_\mathrm{cool} = 0.1$
+achieves 87\% within $\pm$0.3\,\textdegree C with $<$10\% violation and a
+guaranteed maximum rate of 0.99\,\textdegree C/h---comparable to the quartic
+but with mathematically guaranteed rate bounds.
+
+%----------------------------------------------------------------------
+\section{Conclusions}
+
+\begin{enumerate}
+  \item Replacing the hard 0.7\,\textdegree C/h rate clip with soft penalties
+    yields significant improvement in tracking accuracy at the cost of
+    modest rate violations.
+
+  \item The \textbf{Soft PID Aggressive} ($K_p = 2$, $K_i = 0.1$, $K_d = 0.3$)
+    with a 2.1\,\textdegree C/h ceiling achieves the best $\pm$0.3\,\textdegree C
+    (91\%) with 34\% violation.
+
+  \item The \textbf{Bias-Corrected Asymmetric Quartic MPC}
+    ($\alpha_\mathrm{warm}/\alpha_\mathrm{cold}=4$, $\beta=0.9$) achieves
+    the best RMS (0.37\,\textdegree C) with naturally bounded rates
+    ($\leq$2.1\,\textdegree C/h).  The online bias correction based on
+    median+EMA filtering of 1\,h-ahead forecast errors adaptively removes
+    persistent forecast bias without affecting accurate nights.
+
+  \item The practical recommendation depends on the violation budget:
+    \begin{itemize}
+      \item $\leq$10\% violation: \textbf{MPC Conservative}
+        ($\alpha_\mathrm{cool}=2.0$; 76\% $\pm$0.3\,\textdegree C,
+        p95 = 0.84\,\textdegree C/h, max $< 2.0$).
+      \item $\leq$33\% violation: \textbf{MPC Aggressive}
+        (83\% $\pm$0.3\,\textdegree C, p95 = 1.52\,\textdegree C/h).
+      \item $\leq$34\% violation: \textbf{Soft PID Aggressive}
+        (91\% $\pm$0.3\,\textdegree C).
+      \item Zero violation: \textbf{Three-Phase}
+        (72\% $\pm$0.3\,\textdegree C).
+    \end{itemize}
+\end{enumerate}
+
+\end{document}

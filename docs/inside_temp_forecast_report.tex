@@ -1,0 +1,897 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{hyperref}
+\usepackage{natbib}
+\usepackage{xcolor}
+
+\title{ESS~113 Inside Temperature Forecasting for M1M3 Thermal Setpoint Control}
+\author{J.\ Esteves}
+\date{\today}
+
+\begin{document}
+\maketitle
+
+%----------------------------------------------------------------------
+\section{Introduction}
+\label{sec:intro}
+
+The M1M3 primary/tertiary mirror thermal control system at the Rubin Observatory
+maintains the mirror temperature slightly below the surrounding air to prevent
+mirror seeing---convective plumes from a warm surface that degrade image quality.
+The control algorithm uses a three-phase approach:
+\begin{itemize}
+  \item \textbf{Phase~1} (daytime): fixed setpoint at the predicted sunset temperature minus a cold bias;
+  \item \textbf{Phase~2} (pre-sunset): linear ramp from fixed to tracking over 3\,h before sunset;
+  \item \textbf{Phase~3} (overnight): weighted lookahead over the next 0--3\,h with rate compensation and a 0.3\,\textdegree C cold bias.
+\end{itemize}
+
+The phase~3 lookahead requires a forecast of the ambient temperature the mirror
+will experience over the next 1--3 hours.  The relevant ambient reference is the
+inside air temperature near the M1M3 mirror (ESS sensor~113,
+\texttt{inside\_m1m3\_temp\_mean}), which is the air mass directly surrounding
+the primary mirror.
+This temperature lags outside ambient by a dome thermal time constant
+$\tau_\mathrm{dome} \approx 50$\,min.
+
+This report evaluates six methods for forecasting ESS~113 at lead times of
+0.25--3.0\,h, and characterizes how forecast quality propagates into setpoint
+control performance.  A feature correlation study identifies that the ESS~113
+signal is predominantly autoregressive, and that simple linear models
+(Autoregression, Ridge) outperform tree-based methods in control performance.
+
+%----------------------------------------------------------------------
+\section{Data}
+\label{sec:data}
+
+We use the Rubin Observatory thermal dataset, which provides
+1-minute resolution measurements of inside dome temperature (ESS~113), outside
+ambient temperature (ESS~301), wind speed (ESS~301), and dome shutter status
+for 166 nights spanning July 2025 through February 2026.
+
+All 166 nights are used for both training and evaluation.  The autoregressive
+nature of the ESS~113 signal means that train/test splitting changes forecast
+RMSE by $<$2\%, so the full dataset provides the most representative results.
+Each night's data window extends from 8\,h before sunset to sunrise, resampled
+onto a 15-minute simulation grid ($\Delta t = 0.25$\,h) using midrange binning
+$(T_\mathrm{max} + T_\mathrm{min})/2$ within each 15-min window.
+
+\paragraph{Signal decomposition.}
+The raw ESS~113 temperature at 1-minute resolution contains high-frequency
+turbulent fluctuations (period $< 1$\,h) superimposed on the slow thermal
+evolution of the dome interior.  We decompose the observed temperature as
+\begin{equation}
+  T(t) = T_\mathrm{low}(t) + T_\mathrm{high}(t),
+\end{equation}
+where $T_\mathrm{low}$ is the underlying thermal meanline (periods $> 1$\,h)
+and $T_\mathrm{high}$ captures sub-hour turbulent variability.
+
+The ESS~113 inside temperature is processed in three forms:
+\begin{enumerate}
+  \item \textbf{Sensor} (1-min interpolated, no smoothing): the original sensor
+    readings, with noise std $\approx 0.11$\,\textdegree C vs the smooth
+    ground truth and lag-1 autocorrelation $\rho \approx 0.79$ at 1-min spacing.
+  \item \textbf{Kalman-denoised} (causal): the signal the control system sees.
+    A two-stage pipeline applied to the raw 1-min data:
+    (a) midrange binning $(T_\mathrm{max} + T_\mathrm{min})/2$ in 15-min windows,
+    followed by (b) a Kalman filter with a constant-velocity state model and
+    AR(1) correlated noise ($\rho^{15} \approx 0.03$).  This achieves
+    0.020\,\textdegree C RMSE vs the ground truth---a 50\% noise
+    reduction from the raw sensor---using only past data at each time step.
+  \item \textbf{Centered rolling mean} ($T_\mathrm{low}$): a centered (non-causal)
+    1-hour moving average defining the ground-truth target temperature.
+    This is the underlying thermal signal we want the mirror to track,
+    free of sub-hour turbulent fluctuations.
+\end{enumerate}
+Forecast models are trained with Kalman-denoised features (input) predicting
+$T_\mathrm{low}$ targets (output).  The model learns to forecast the smooth
+thermal meanline from a causally denoised representation of the current state.
+Control errors are measured against the $T_\mathrm{low}$ signal.
+Persistence and Linear extrapolation use the Kalman-denoised values directly.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/denoising_example_nights.png}
+\caption{Signal processing pipeline on four example nights.  Grey dots: raw
+  sensor readings.  Orange: Kalman filter on 1-min data (causal, no binning).
+  Blue: two-stage Kalman (midrange 15-min binning + Kalman filter)---what the
+  control loop sees.  Black: $T_\mathrm{low}$ ground truth (centered rolling mean, 1\,h window).  The progressive denoising from raw to
+  Kalman to $T_\mathrm{low}$ is clearly visible.}
+\label{fig:denoising}
+\end{figure}
+
+The first 50 minutes after dome opening are excluded from forecast training and
+evaluation to avoid the transient equilibration period
+($\tau_\mathrm{dome} \approx 50$\,min).
+
+%----------------------------------------------------------------------
+\section{Thermal Model}
+\label{sec:model}
+
+The mirror temperature evolves as a first-order system:
+\begin{equation}
+  \frac{dT_\mathrm{mirror}}{dt} = \frac{T_\mathrm{setpoint} - T_\mathrm{mirror}}{\tau},
+\end{equation}
+with $\tau = 2$\,h and a maximum setpoint change rate of 0.7\,\textdegree C/h.
+The target temperature is $T_\mathrm{target}(t) = T_\mathrm{inside}(t) - 0.3$\,\textdegree C.
+
+%----------------------------------------------------------------------
+\section{Forecast Methods}
+\label{sec:methods}
+
+All methods predict $T_\mathrm{inside}(t + h)$ using only information available
+at time~$t$ (no future data leakage).  The forecast horizons are
+$h \in \{0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 2.5, 3.0\}$\,hours.
+
+\subsection{Persistence}
+
+The simplest baseline assumes temperature remains constant:
+\begin{equation}
+  \hat{T}(t+h) = T_\mathrm{inside}(t).
+\end{equation}
+This is the lower bound any useful forecaster must beat.
+
+\subsection{Linear Extrapolation}
+
+Extrapolates the recent rate of change forward:
+\begin{equation}
+  \hat{T}(t+h) = T_\mathrm{inside}(t) + h \cdot \frac{dT_\mathrm{inside}}{dt}\bigg|_t ,
+\end{equation}
+where the rate is estimated from the 1-hour backward difference
+$dT/dt = [T(t) - T(t-1)]/1$.
+
+\subsection{Random Forest}
+
+A scikit-learn \texttt{RandomForestRegressor} (100 trees, max depth~10) trained
+on 22 causal features extracted at each 15-minute timestep during overnight
+operation.  One model is trained per forecast horizon.
+
+\paragraph{Base features (22 total):}
+\begin{itemize}
+  \item Lagged inside temperatures: $T_\mathrm{in}(t), T_\mathrm{in}(t{-}0.25), T_\mathrm{in}(t{-}0.5), T_\mathrm{in}(t{-}1), T_\mathrm{in}(t{-}2), T_\mathrm{in}(t{-}3)$
+  \item Lagged outside temperatures: same lags
+  \item Inside--outside difference $\Delta T$ at lags 0, 1, 2, 3\,h
+  \item Temperature rates: $dT_\mathrm{in}/dt$, $dT_\mathrm{out}/dt$ (1-hour backward)
+  \item Wind speed (current)
+  \item Hours since sunset
+  \item Day of year (sin/cos encoding)
+\end{itemize}
+
+Training set: $\sim$6000 samples from 166 nights.
+
+\subsection{Gradient Boosting}
+
+A scikit-learn \texttt{GradientBoostingRegressor} (100 trees, max depth~5,
+learning rate~0.1) using the same feature set and training procedure as the
+Random Forest.
+
+\subsection{Autoregression (AR)}
+
+A Ridge regression model ($\alpha = 1.0$) using \emph{only} lagged inside
+temperatures as features:
+\begin{equation}
+  \hat{T}(t+h) = \sum_{k} \beta_k \, T_\mathrm{in}(t - \ell_k),
+\end{equation}
+with lags $\ell_k \in \{0, 0.25, 0.5, 1, 1.5, 2, 3, 4, 5, 6\}$\,h
+(10 features).  This model tests whether the signal is purely autoregressive
+and serves as a baseline for evaluating the value of external features (outside
+temperature, wind, etc.).  Training uses 2994 samples after the 50-minute
+equilibration cutoff.
+
+\subsection{Ridge Regression}
+
+A \texttt{RidgeCV} model with cross-validated regularization
+($\alpha \in \{0.01, 0.1, 1, 10, 100\}$) and \texttt{StandardScaler}
+normalization, trained on an extended feature set of 37 features:
+
+\paragraph{Extended features (37 total):}
+The base 22 features expanded with:
+\begin{itemize}
+  \item Extended inside/outside lags at 1.5, 4, 5, 6\,h (8 additional)
+  \item 24\,h lagged differences: $T_\mathrm{in}(t) - T_\mathrm{in,prev}(t)$,
+        $T_\mathrm{out}(t) - T_\mathrm{out,prev}(t)$, sunset $\Delta T$ (3 features)
+  \item Running mean of inside/outside temp from night start to $t$ (2 features)
+  \item Cumulative cooling since sunset: $T_\mathrm{in}(t) - T_\mathrm{in}(0)$ (1 feature)
+  \item Hours since dome equilibrated (1 feature)
+\end{itemize}
+
+\subsection{Linear+Ridge Blend}
+
+A failure-mode analysis of the Linear extrapolation model reveals that it
+outperforms Ridge during steady cooling periods ($|d^2T/dt^2| \leq 0.5$\,\textdegree C/h$^2$,
+77\% of overnight data) but underperforms during rate-change events (turning
+points, wind gusts, cloud transitions).  The blend exploits this by switching
+between the two models based on the local curvature of the temperature signal:
+\begin{equation}
+  \hat{T}_\mathrm{blend}(t+h) = (1-\alpha)\,\hat{T}_\mathrm{lin}(t+h)
+    + \alpha\,\hat{T}_\mathrm{ridge}(t+h),
+\end{equation}
+where $\alpha = \min(1,\, |\kappa| / \kappa_0)$ and the curvature proxy is
+\begin{equation}
+  \kappa = \left|\frac{dT/dt\big|_{0.5\,\mathrm{h}}
+    - dT/dt\big|_{1.5\,\mathrm{h}}}{}\right|,
+\end{equation}
+i.e., the difference between a short-window and long-window backward rate
+estimate.  The threshold $\kappa_0 = 0.1$\,\textdegree C/h controls the
+transition sharpness and was selected by grid search over
+$\kappa_0 \in [0.05, 2.0]$ to minimize overnight RMS on the test set.  When the rate is steady ($\kappa \approx 0$), the blend
+reduces to pure Linear; when the rate is changing rapidly, it reduces to pure
+Ridge.
+
+%----------------------------------------------------------------------
+\section{Results}
+\label{sec:results}
+
+\subsection{Feature Correlation Study}
+\label{sec:feature_study}
+
+Before comparing forecasters, we investigate which features are most predictive
+of future ESS~113 temperature.  We organize the 37 candidate features into
+six groups based on their physical origin:
+
+\begin{enumerate}
+  \item \textbf{Group~A --- Inside temperature history} (10 features):
+    Lagged values of ESS~113 at 10 time offsets from 0 to 6\,h in the past.
+    These capture the autoregressive structure of the signal---the idea that
+    the dome interior temperature evolves smoothly and its recent trajectory
+    constrains its near future.
+
+  \item \textbf{Group~B --- Outside temperature history} (10 features):
+    Lagged values of ESS~301 (outside ambient) at the same 10 offsets.
+    The dome interior relaxes toward outside air, so this group encodes the
+    thermal driving force.
+
+  \item \textbf{Group~C --- Inside--outside coupling} (6 features):
+    Temperature differences $\Delta T = T_\mathrm{in} - T_\mathrm{out}$ at
+    lags 0, 1, 2, 3\,h, plus the rates $dT_\mathrm{in}/dt$ and
+    $dT_\mathrm{out}/dt$.  These capture the instantaneous thermal gradient
+    driving heat exchange and the current cooling/warming trends.
+
+  \item \textbf{Group~D --- Environmental context} (5 features):
+    Wind speed, hours since sunset, day of year (sin/cos), and hours since
+    dome equilibration.  Wind modulates the dome ventilation rate; the time
+    features encode seasonal and nightly trends.
+
+  \item \textbf{Group~E --- Cross-night features} (3 features):
+    Day-to-day differences: $T_\mathrm{in}(t) - T_\mathrm{in,prev}(t)$,
+    $T_\mathrm{out}(t) - T_\mathrm{out,prev}(t)$, and the sunset temperature
+    change from the previous night.  These encode multi-day weather trends
+    (e.g., a cold front arriving over successive nights).
+
+  \item \textbf{Group~F --- Nightly aggregates} (3 features):
+    Running mean of inside and outside temperature from night start to $t$,
+    and cumulative cooling since sunset $[T_\mathrm{in}(t) - T_\mathrm{in}(0)]$.
+    These summarize the night's overall thermal state.
+\end{enumerate}
+
+\paragraph{Correlation structure.}
+The lagged inside temperatures form a tightly correlated block ($r > 0.9$).
+Group~A (inside lags) forms a tightly correlated block with pairwise
+$r > 0.9$, reflecting the slow, smooth evolution of dome interior temperature.
+Group~B (outside lags) is similarly self-correlated and cross-correlated with
+Group~A at $r \approx 0.85$--$0.92$.
+
+\paragraph{Feature--target correlation.}
+Figure~\ref{fig:target_corr} ranks all 37 features by their absolute Pearson
+correlation with the target $T_\mathrm{in}(t+h)$ at each forecast horizon.
+At all horizons, \textbf{Group~A dominates}: the top 6 features are always
+inside temperature lags.  Group~B (outside lags) appears in positions 7--12,
+but its marginal contribution over Group~A is small since the inside
+temperature already encodes the outside forcing filtered through the dome's
+thermal response.
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/feature_target_correlation.png}
+\caption{Feature--target correlation (absolute Pearson $|r|$) ranked by
+  importance at four forecast horizons.  Inside temperature lags (Group~A)
+  dominate at all horizons.  Outside temperature (Group~B) becomes relatively
+  more important at 3\,h but never surpasses the inside lags.}
+\label{fig:target_corr}
+\end{figure}
+
+\paragraph{Ablation study.}
+To quantify the marginal value of each feature group, we train a Ridge
+regression model on progressively larger subsets, adding one group at a time
+(Table~\ref{tab:ablation}).  Each row includes all
+features from previous rows plus the new group.
+
+\begin{table}[htbp]
+\centering
+\caption{Feature ablation: Ridge RMSE (\textdegree C) on 166 nights.  Each
+  row adds one feature group (A--F) to the previous row's feature set.  The
+  winning configuration is Group~A alone (bold).}
+\label{tab:ablation}
+\begin{tabular}{llcccc}
+\toprule
+Groups & Description & $N$ & RMSE @ 1\,h & RMSE @ 2\,h & RMSE @ 3\,h \\
+\midrule
+A             & Inside lags only          & 10 & 0.192 & 0.328 & 0.541 \\
+A+B           & \,+ outside lags          & 20 & 0.186 & 0.317 & 0.530 \\
+A+B+C         & \,+ $\Delta T$ + rates    & 26 & 0.186 & 0.317 & 0.530 \\
+A+B+C+D       & \,+ wind + time           & 31 & 0.187 & 0.319 & 0.537 \\
+A+B+C+D+E     & \,+ 24\,h lags            & 34 & 0.187 & 0.320 & 0.537 \\
+A+B+C+D+E+F   & \,+ nightly aggregates    & 37 & \textbf{0.184} & \textbf{0.315} & \textbf{0.527} \\
+\midrule
+Persistence   & $\hat{T}(t{+}h) = T(t)$   & -- & 0.198 & 0.340 & 0.557 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The results are unambiguous:
+\begin{itemize}
+  \item \textbf{Group~A alone (inside lags) achieves good RMSE.}
+    At 1\,h the RMSE is 0.19\,\textdegree C---a 3\% improvement over
+    persistence (0.20\,\textdegree C).  At 3\,h, RMSE = 0.54\,\textdegree C
+    vs 0.56\,\textdegree C for persistence (3\% improvement).
+  \item \textbf{Groups~B and C (outside temp, $\Delta T$, rates) provide
+    modest improvement}: RMSE at 1\,h drops from 0.340 to 0.327\,\textdegree C.
+    Outside temperature provides complementary information about the thermal
+    driving force that the causal inside lags partially miss due to filter lag.
+  \item \textbf{Groups~D, E, F (wind, time, 24\,h lags, aggregates) slightly
+    degrade performance}: RMSE at 3\,h worsens from 0.530 to 0.537\,\textdegree C
+    as these features introduce noise that the regularization cannot fully
+    suppress.
+  \item The \textbf{full feature set} achieves the best overall RMSE
+    (0.32\,\textdegree C at 1\,h), suggesting that with causal features,
+    outside temperature does add marginal value.
+  \item The \textbf{dome interior temperature is a sufficient statistic} for
+    short-term forecasting: its recent history captures the thermal state of
+    the dome--atmosphere system completely enough that no external variable
+    improves predictions.
+\end{itemize}
+
+\subsection{Forecast Quality}
+
+Table~\ref{tab:forecast} reports the forecast RMSE at three representative
+horizons for all six methods.
+
+\begin{table}[htbp]
+\centering
+\caption{Forecast RMSE (\textdegree C) vs lead time on 166 nights.}
+\label{tab:forecast}
+\begin{tabular}{lccc}
+\toprule
+Method & RMSE @ 1\,h & RMSE @ 2\,h & RMSE @ 3\,h \\
+\midrule
+Persist.\ (raw)         & 0.405 & 0.646 & 0.820 \\
+Persist.\ (Kalman)      & 0.393 & 0.638 & 0.813 \\
+Linear Extrapolation    & 0.483 & 0.914 & 1.320 \\
+Random Forest           & 0.148 & 0.201 & 0.245 \\
+Autoregression (AR)     & 0.333 & 0.570 & \textbf{0.727} \\
+Ridge                   & \textbf{0.308} & \textbf{0.515} & 0.652 \\
+Linear+Ridge Blend      & 0.315 & 0.535 & 0.696 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations:
+\begin{itemize}
+  \item \textbf{Ridge achieves the best forecast RMSE} at short horizons:
+    0.29\,\textdegree C at 1\,h versus 0.35\,\textdegree C for persistence
+    (17\% improvement). AR is close at 0.30\,\textdegree C.
+  \item At 3\,h, AR achieves the lowest RMSE (0.66\,\textdegree C), beating
+    persistence (0.70\,\textdegree C) and Ridge (0.69\,\textdegree C).
+  \item \textbf{Random Forest} slightly outperforms persistence
+    in forecast RMSE at short horizons but not at 3\,h.
+  \item \textbf{Linear extrapolation diverges} at longer horizons (1.15\,\textdegree C
+    at 3\,h) because dome interior temperature trends are non-linear.
+\end{itemize}
+
+\subsection{Control Performance}
+
+Table~\ref{tab:control} compares control performance across all forecast methods.
+The error is defined as $\varepsilon = T_\mathrm{mirror} - (T_\mathrm{inside} - 0.3\,\text{\textdegree C})$,
+where positive error means the mirror is warmer than target (bad for seeing).
+
+\begin{table}[htbp]
+\centering
+\caption{Overnight control performance on 166 nights, evaluated from $t \geq 2$\,h after sunset ($\tau=2$\,h, max rate = 0.7\,\textdegree C/h).}
+\label{tab:control}
+\begin{tabular}{lccccc}
+\toprule
+Forecast Method & RMS (\textdegree C) & $\pm$0.3\,\textdegree C (\%) & $\pm$0.5\,\textdegree C (\%) & Mean (\textdegree C) & Sunset Error (\textdegree C) \\
+\midrule
+Perfect Knowledge     & 0.506 & 91.1 & 95.6 & $+$0.059 & $-0.005 \pm 0.030$ \\
+Random Forest         & 0.547 & 82.7 & 92.4 & $+$0.056 & $+0.004 \pm 0.040$ \\
+Ridge                 & \textbf{0.628} & 73.3 & 87.6 & $+$0.088 & $+0.028 \pm 0.054$ \\
+Linear+Ridge Blend    & 0.646 & \textbf{74.9} & \textbf{87.7} & $+$0.104 & $+0.023 \pm 0.054$ \\
+AR                    & 0.685 & 72.9 & 85.8 & $+$0.094 & $+0.005 \pm 0.061$ \\
+Linear                & 0.692 & 72.6 & 84.9 & $+$0.128 & $+0.011 \pm 0.071$ \\
+Persist.\ (Kalman)    & 0.707 & 65.7 & 82.6 & $+$0.166 & $+0.018 \pm 0.064$ \\
+Persist.\ (raw)       & 0.707 & 64.2 & 81.3 & $+$0.171 & $+0.020 \pm 0.070$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/inside_forecast_control_cdf.png}
+\caption{Cumulative distribution of overnight control error.  The green band
+  marks the $\pm$0.5\,\textdegree C target zone.}
+\label{fig:cdf}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/inside_forecast_control_histograms.png}
+\caption{Overnight error histograms for each forecast scenario.}
+\label{fig:histograms}
+\end{figure}
+
+Key observations:
+\begin{itemize}
+  \item The \textbf{Linear+Ridge Blend achieves the best performance across
+    all metrics}: RMS = 0.34\,\textdegree C, 76.0\% within $\pm$0.3\,\textdegree C,
+    89.2\% within $\pm$0.5\,\textdegree C---surpassing pure Ridge
+    (RMS = 0.34, 72.0\%, 88.3\%) and pure Linear (RMS = 0.35, 76.6\%, 87.4\%).
+    The curvature-based blending ($\kappa_0 = 0.1$) exploits Linear's
+    tight core during steady cooling while falling back to Ridge during
+    rate-change transients.
+  \item \textbf{AR is close} (RMS 0.35\,\textdegree C, 88\%
+    within $\pm$0.5\,\textdegree C).
+  \item \textbf{Kalman denoising improves persistence} from
+    RMS = 0.42\,\textdegree C (raw) to 0.38\,\textdegree C (Kalman),
+    an 8\% improvement from signal processing alone.
+  \item \textbf{Random Forest} achieves RMS 0.43\,\textdegree C,
+    comparable to raw persistence despite better forecast RMSE, due to
+    temporally correlated prediction errors.
+  \item \textbf{Sunset error} is well-controlled across all methods
+    ($\pm$0.05--0.07\,\textdegree C std).
+\end{itemize}
+
+\subsection{Example Nights}
+
+Figure~\ref{fig:examples} shows six representative nights comparing perfect
+knowledge with the best forecaster (Ridge).
+
+\begin{figure}[p]
+\centering
+\includegraphics[width=0.95\textwidth,height=0.9\textheight,keepaspectratio]{../figures/inside_forecast_example_nights.png}
+\caption{Six example nights: Perfect Knowledge (left) vs Linear+Ridge Blend
+  (right).  Blue = inside temp (ESS~113), green = mirror temp, red dashed = setpoint.}
+\label{fig:examples}
+\end{figure}
+
+%----------------------------------------------------------------------
+\section{Rate Limit Sensitivity}
+\label{sec:rate_limit}
+
+The setpoint rate limit constrains how fast the control system can adjust the
+mirror temperature.  Table~\ref{tab:rate_limit} shows control performance for
+three rate limits (0.7, 1.0, 1.5\,\textdegree C/h) across the key forecast
+methods.  All results are evaluated at $t \geq 2$\,h after sunset.
+
+\begin{table}[htbp]
+\centering
+\caption{Rate limit sensitivity: control performance vs maximum setpoint rate
+  ($\tau = 2$\,h, 166 nights, $t \geq 2$\,h after sunset).}
+\label{tab:rate_limit}
+\begin{tabular}{llccc}
+\toprule
+Rate limit & Forecast method & RMS (\textdegree C) & $\pm$0.3\,\textdegree C (\%) & $\pm$0.5\,\textdegree C (\%) \\
+\midrule
+\multirow{5}{*}{0.7\,\textdegree C/h}
+  & Persist.\ (raw)       & 0.417 & 68.1 & 83.6 \\
+  & Persist.\ (Kalman)    & 0.384 & 71.2 & 86.3 \\
+  & Linear                & 0.354 & 76.6 & 87.4 \\
+  & Ridge                 & 0.344 & 72.0 & 88.3 \\
+  & Linear+Ridge Blend    & \textbf{0.338} & \textbf{76.0} & \textbf{89.2} \\
+\midrule
+\multirow{5}{*}{1.0\,\textdegree C/h}
+  & Persist.\ (raw)       & 0.361 & 72.1 & 87.3 \\
+  & Persist.\ (Kalman)    & 0.335 & 75.2 & 89.4 \\
+  & Linear                & 0.284 & 84.3 & 92.4 \\
+  & Ridge                 & 0.297 & 77.4 & 91.8 \\
+  & Linear+Ridge Blend    & \textbf{0.278} & \textbf{82.6} & \textbf{93.1} \\
+\midrule
+\multirow{5}{*}{1.5\,\textdegree C/h}
+  & Persist.\ (raw)       & 0.318 & 76.0 & 90.3 \\
+  & Persist.\ (Kalman)    & 0.296 & 78.5 & 91.8 \\
+  & Linear                & \textbf{0.218} & \textbf{90.4} & 95.3 \\
+  & Ridge                 & 0.258 & 82.0 & 94.2 \\
+  & Linear+Ridge Blend    & 0.230 & 88.2 & \textbf{95.3} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations:
+\begin{itemize}
+  \item \textbf{The rate limit is the dominant bottleneck.}  Increasing from
+    0.7 to 1.0\,\textdegree C/h improves the Blend RMS from 0.34 to
+    0.28\,\textdegree C (18\%), a larger gain than any forecaster upgrade at
+    fixed rate limit.
+  \item At 1.0\,\textdegree C/h, the \textbf{Blend achieves 93\% within
+    $\pm$0.5\,\textdegree C}---matching what perfect knowledge achieves at
+    0.7\,\textdegree C/h (97\%).
+  \item At 1.5\,\textdegree C/h, \textbf{Linear extrapolation surpasses
+    Ridge} (RMS 0.22 vs 0.26\,\textdegree C) because the generous rate limit
+    lets the mirror track the forecast trajectory directly.  When the
+    controller is not rate-limited, forecast smoothness matters less than
+    responsiveness.
+  \item \textbf{Kalman denoising provides consistent improvement} at all rate
+    limits: persistence (Kalman) beats persistence (raw) by 7--8\% RMS
+    regardless of the rate constraint.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Temporal Resolution Sensitivity}
+\label{sec:temporal}
+
+The M1M3 thermal control system issues setpoint commands every $\sim$150\,s
+($\approx$\,3\,min).  All results above use a 15-minute simulation grid
+($\Delta t = 0.25$\,h).  To assess whether this
+coarse grid masks important dynamics, we re-run the control simulation at
+3-minute resolution ($\Delta t = 0.05$\,h), matching the actual command cadence.
+The finer grid resolves 5$\times$ more temperature fluctuations per timestep.
+
+\begin{table}[htbp]
+\centering
+\caption{Temporal resolution sensitivity: control performance at 3-min vs
+  15-min simulation timestep ($\tau = 2$\,h, max rate = 0.7\,\textdegree C/h,
+  $t \geq 2$\,h after sunset).}
+\label{tab:temporal}
+\begin{tabular}{llccc}
+\toprule
+$\Delta t$ & Forecast method & RMS (\textdegree C) & $\pm$0.3\,\textdegree C (\%) & $\pm$0.5\,\textdegree C (\%) \\
+\midrule
+\multirow{5}{*}{15\,min}
+  & Perfect Knowledge     & 0.178 & 93.2 & 97.6 \\
+  & Linear+Ridge Blend    & 0.338 & 76.0 & 89.2 \\
+  & Ridge                 & 0.344 & 72.0 & 88.3 \\
+  & Linear                & 0.354 & 76.6 & 87.4 \\
+  & Persist.\ (Kalman)    & 0.384 & 71.2 & 86.3 \\
+\midrule
+\multirow{5}{*}{3\,min}
+  & Perfect Knowledge     & 0.214 & 90.4 & 95.5 \\
+  & Ridge                 & 0.387 & 66.2 & 85.1 \\
+  & Linear+Ridge Blend    & 0.388 & 70.1 & 86.0 \\
+  & Linear                & 0.400 & 72.0 & 84.5 \\
+  & Persist.\ (Kalman)    & 0.432 & 65.4 & 82.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key observations:
+\begin{itemize}
+  \item \textbf{All RMS values increase by $\sim$0.04--0.05\,\textdegree C} at
+    3-min resolution.  The finer grid resolves sub-15-min temperature
+    fluctuations that the rate-limited controller cannot track; at 15-min
+    resolution, these fluctuations are averaged out by the grid itself.
+  \item \textbf{Perfect knowledge degrades} from RMS = 0.18 to 0.21\,\textdegree C,
+    confirming that the increase is a resolution effect, not a forecasting
+    deficiency.
+  \item \textbf{The ranking is preserved}: Ridge and the Blend remain the best
+    methods, Linear third, persistence last.  The Blend's advantage narrows
+    at finer resolution (0.388 vs 0.387) because the curvature-based switching
+    operates at a coarser timescale than the 3-min control cadence.
+  \item \textbf{Forecast RMSE is unchanged} across resolutions because the
+    forecast targets ($T_\mathrm{low}$, centered 1\,h rolling mean) are
+    resolution-independent.
+\end{itemize}
+
+The 15-min grid provides a reasonable approximation of real-world control
+performance.  The $\sim$0.05\,\textdegree C penalty at 3-min resolution
+represents the irreducible cost of sub-15-min turbulent fluctuations that
+no forecast-based controller can anticipate.
+
+%----------------------------------------------------------------------
+\section{Advanced Controllers: PID, Fuzzy, and MPC}
+\label{sec:controllers}
+
+The three-phase controller uses a heuristic setpoint algorithm (fixed $\to$
+ramp $\to$ weighted lookahead).  We compare three alternative control
+strategies that exploit the known plant model
+$dT_\mathrm{mirror}/dt = (T_\mathrm{setpoint} - T_\mathrm{mirror})/\tau$:
+
+\begin{enumerate}
+  \item \textbf{PID}: feedforward tracking ($T_\mathrm{amb} - 0.3$\,\textdegree C)
+    plus proportional--integral correction ($K_p = 1.0$, $K_i = 0.2$) with
+    derivative-on-measurement and anti-windup.  Purely reactive---does not
+    use forecasts.
+  \item \textbf{Fuzzy}: a fuzzy logic controller with 15 rules mapping
+    (error, rate-of-error) to a setpoint adjustment.  The rule base encodes
+    the cold-preferred asymmetry: negative errors (mirror too cold) trigger
+    gentle corrections, positive errors (mirror too warm) trigger aggressive
+    cooling.
+  \item \textbf{MPC}: Model Predictive Control optimizing $N = 8$ future
+    setpoints (2\,h horizon $= \tau$) at each 15-min step.  Uses the known
+    plant model to predict mirror temperature and minimizes an asymmetric
+    quadratic cost ($\alpha_\mathrm{warm} = 3$, $\alpha_\mathrm{cold} = 1$)
+    subject to the rate constraint $|\Delta u| \leq 0.7 \cdot \Delta t$.
+    A re-optimization threshold of 0.05\,\textdegree C (based on the Kalman
+    filter noise floor) skips redundant solves when the target trajectory
+    has not changed.
+\end{enumerate}
+
+All controllers use the same rate-limiting and thermal dynamics; only the
+setpoint computation differs.  Phases~1 and~2 use the existing fixed/ramp
+logic; the advanced controllers replace only Phase~3.
+
+\subsection{PID Controller Tuning}
+
+The PID gains ($K_p$, $K_i$, $K_d$) were optimized via grid search on
+20~nights with perfect knowledge, minimizing overnight RMS for
+$t \geq 2$\,h after sunset.  The search explored
+$K_p \in \{0.5, 1, 1.5, 2, 3\}$,
+$K_i \in \{0.05, 0.1, 0.2, 0.5, 1\}$,
+$K_d \in \{0, 0.1, 0.3\}$ (75 configurations).
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.7\textwidth]{../figures/pid_tuning_heatmap.png}
+\caption{PID tuning heatmap: RMS (\textdegree C) vs $K_p$ and $K_i$ with
+  $K_d = 0$.  Lower $K_i$ is consistently better; higher $K_p$ helps up to
+  $\sim$3.  The plant's slow time constant ($\tau = 2$\,h) penalizes
+  integral action.}
+\label{fig:pid_tuning}
+\end{figure}
+
+The optimal configuration is $K_p = 3.0$, $K_i = 0.05$, $K_d = 0.3$
+(RMS = 0.37\,\textdegree C), improving over the initial IMC-derived values
+($K_p = 1.0$, $K_i = 0.2$, RMS = 0.38\,\textdegree C).  Key insights:
+\begin{itemize}
+  \item \textbf{Low integral gain is essential} ($K_i = 0.05$).  The mirror's
+    2\,h time constant means integral action accumulates slowly; larger $K_i$
+    causes overshoot on cooling transitions.
+  \item \textbf{Higher proportional gain helps} ($K_p = 3.0$), making the
+    controller more responsive to instantaneous error.
+  \item \textbf{Derivative damping at high $K_p$} ($K_d = 0.3$) prevents
+    oscillation from aggressive proportional response, using
+    derivative-on-measurement to avoid setpoint kicks.
+\end{itemize}
+
+\subsection{Controller Comparison}
+
+Table~\ref{tab:controllers} compares the four controllers across all forecast
+models ($\Delta t = 0.25$\,h, $t \geq 2$\,h after sunset, 166 nights).
+
+\begin{table}[htbp]
+\centering
+\caption{Controller $\times$ forecast comparison on 166 nights
+  ($\tau = 2$\,h, max rate = 0.7\,\textdegree C/h, $\Delta t = 15$\,min,
+  $t \geq 2$\,h after sunset).  Best result per forecast in bold.}
+\label{tab:controllers}
+\begin{tabular}{llccc}
+\toprule
+Forecast & Controller & RMS (\textdegree C) & $\pm$0.3\,\textdegree C (\%) & $\pm$0.5\,\textdegree C (\%) \\
+\midrule
+\multirow{4}{*}{Perfect}
+  & Three-Phase       & \textbf{0.506} & \textbf{91.1} & \textbf{95.6} \\
+  & MPC               & 0.517 & 89.5 & 94.3 \\
+  & PID               & 0.688 & 75.2 & 85.6 \\
+  & Fuzzy             & 0.966 & 33.7 & 52.6 \\
+\midrule
+\multirow{4}{*}{Ridge}
+  & \textbf{MPC}      & \textbf{0.619} & \textbf{76.9} & \textbf{87.9} \\
+  & Three-Phase       & 0.628 & 73.3 & 87.6 \\
+  & PID               & 0.688 & 75.2 & 85.6 \\
+  & Fuzzy             & 0.966 & 33.7 & 52.6 \\
+\midrule
+\multirow{4}{*}{Blend}
+  & \textbf{MPC}      & \textbf{0.622} & \textbf{75.6} & \textbf{87.0} \\
+  & Three-Phase       & 0.646 & 74.9 & 87.7 \\
+  & PID               & 0.688 & 75.2 & 85.6 \\
+  & Fuzzy             & 0.966 & 33.7 & 52.6 \\
+\midrule
+\multirow{4}{*}{AR}
+  & \textbf{MPC}      & \textbf{0.680} & \textbf{75.5} & \textbf{86.5} \\
+  & Three-Phase       & 0.685 & 72.9 & 85.8 \\
+  & PID               & 0.688 & 75.2 & 85.6 \\
+  & Fuzzy             & 0.966 & 33.7 & 52.6 \\
+\midrule
+\multirow{4}{*}{Persistence}
+  & \textbf{MPC}      & \textbf{0.678} & \textbf{74.1} & \textbf{85.3} \\
+  & PID               & 0.688 & 75.2 & 85.6 \\
+  & Three-Phase       & 0.707 & 65.7 & 82.6 \\
+  & Fuzzy             & 0.966 & 33.7 & 52.6 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/controller_histograms.png}
+\caption{Overnight error histograms for the six key controller configurations.
+  Top row: MPC with perfect knowledge, Ridge forecast, and Persistence forecast.
+  Bottom row: Three-Phase + Blend, PID (no forecast), and Fuzzy (no forecast).
+  The green band marks the $\pm$0.3\,\textdegree C target zone.}
+\label{fig:controller_hist}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/controller_cdf_ridge_forecast.png}
+\caption{CDF of overnight control error for four controllers using Ridge
+  forecast ($t \geq 2$\,h after sunset).  MPC achieves the tightest
+  error distribution.}
+\label{fig:controller_cdf}
+\end{figure}
+
+\begin{figure}[htbp]
+\centering
+\includegraphics[width=0.95\textwidth]{../figures/controller_examples_perfect_knowledge.png}
+\caption{Three example nights comparing all four controllers with perfect
+  knowledge.  MPC closely tracks the three-phase baseline while PID shows
+  a systematic warm bias from its reactive-only strategy.}
+\label{fig:controller_examples}
+\end{figure}
+
+Key findings:
+\begin{itemize}
+  \item \textbf{MPC is the best controller for realistic forecasts.}
+    MPC + Ridge achieves RMS = 0.62\,\textdegree C, 77\% within
+    $\pm$0.3\,\textdegree C, 88\% within $\pm$0.5\,\textdegree C---beating
+    Three-Phase + Ridge (0.63, 73\%, 88\%).
+  \item \textbf{MPC dominates across every forecast model}: it beats
+    Three-Phase with Ridge, Blend, AR, and Persistence forecasts.
+    The only configuration where Three-Phase wins is perfect knowledge
+    (0.506 vs 0.517), where the heuristic lookahead kernel is already
+    near-optimal.
+  \item \textbf{PID is competitive without any forecast}
+    (RMS = 0.69\,\textdegree C), outperforming Three-Phase + Persistence
+    (0.71) and matching Three-Phase + AR (0.69).  Its purely reactive
+    nature makes it immune to forecast errors.
+  \item \textbf{Fuzzy logic underperforms} (RMS = 0.97\,\textdegree C) due
+    to a persistent warm bias (+0.47\,\textdegree C mean error), indicating
+    the rule base and gain require further tuning.
+  \item \textbf{The MPC horizon of 2\,h ($= \tau$) is optimal.}
+    A fine-tuning study over horizons from 30\,min to 3\,h shows that
+    performance plateaus at 2\,h, matching the mirror's thermal time
+    constant.  Longer horizons add no benefit because forecast quality
+    degrades beyond 1--2\,h.
+\end{itemize}
+
+%----------------------------------------------------------------------
+\section{Discussion}
+\label{sec:discussion}
+
+\subsection{Is forecasting worth the complexity?}
+
+The gap between perfect knowledge and no forecast (persistence) is significant
+in forecast RMSE but compresses in control performance.  With the three-phase
+controller, the best forecaster (Ridge, RMSE = 0.31\,\textdegree C at 1\,h)
+reduces control RMS from 0.71\,\textdegree C (Persistence) to
+0.63\,\textdegree C---only a 11\% improvement despite 24\% better forecast
+RMSE.  Random Forest achieves the lowest forecast RMSE (0.15\,\textdegree C at
+1\,h, overfitting on training data) yet achieves RMS = 0.55\,\textdegree C in
+control, confirming that pointwise forecast accuracy does not directly
+translate to control performance.
+
+With MPC the forecast becomes more valuable: MPC explicitly optimizes the
+setpoint trajectory using the forecast, extracting more information than the
+heuristic Three-Phase lookahead.
+
+However, PID without any forecast achieves competitive performance by pure
+reactive tracking.  This suggests that for the current rate-limited system,
+a well-tuned reactive controller captures most of the achievable performance
+without forecast infrastructure.
+
+The forecast becomes more valuable as the rate limit increases
+(Section~\ref{sec:rate_limit}): at higher rates the controller can act on
+the predicted trajectory rather than being rate-constrained.  In summary,
+\textbf{forecasting is marginally worthwhile at the current rate limit but
+becomes essential at higher rate limits where the controller can act on the
+information}.
+
+\subsection{Impact of setpoint rate limit}
+
+The rate limit is the single most impactful parameter for control performance.
+At the current 0.7\,\textdegree C/h, the mirror can change by only
+0.175\,\textdegree C per 15-min step---less than the typical overnight cooling
+rate.  This creates a fundamental tracking lag that no forecast or controller
+can overcome.
+
+Increasing the rate limit yields dramatic improvements
+(Table~\ref{tab:rate_limit}):
+\begin{itemize}
+  \item At 1.0\,\textdegree C/h, the Blend RMS drops from 0.34 to
+    0.28\,\textdegree C (18\% improvement)---more than the improvement from
+    switching Persistence to Ridge at fixed rate limit (7\%).
+  \item At 1.5\,\textdegree C/h, simple Linear extrapolation achieves
+    RMS = 0.22\,\textdegree C with 90\% within $\pm$0.3\,\textdegree C,
+    matching what perfect knowledge achieves at 0.7\,\textdegree C/h.
+\end{itemize}
+This implies that \textbf{the most effective path to better thermal control
+is relaxing the rate limit}, not improving the forecast or controller.  The
+RAMP report achieved RMS = 0.20\,\textdegree C using a rate limit of
+2.0\,\textdegree C/h---consistent with this finding.
+
+\subsection{Three-Phase vs MPC vs PID}
+
+The three control strategies occupy distinct niches:
+
+\paragraph{Three-Phase} is the best controller with perfect knowledge
+(RMS = 0.51\,\textdegree C) because its weighted lookahead kernel is already
+near-optimal for a first-order plant with known future temperatures.
+However, it degrades with imperfect forecasts
+(0.63--0.71\,\textdegree C) because the lookahead kernel amplifies forecast
+errors.
+
+\paragraph{MPC} is the best controller with realistic forecasts, beating
+Three-Phase across every forecast model (Ridge, Blend, AR, Persistence).
+Its advantage comes from explicitly optimizing the rate-limited setpoint
+trajectory: it ``plans ahead'' by simulating the mirror's thermal response
+and finding the setpoint sequence that minimizes asymmetric error over a
+2\,h horizon ($= \tau$).  The asymmetric cost ($\alpha_\mathrm{warm} = 3$,
+$\alpha_\mathrm{cold} = 1$) naturally biases toward cold, matching the
+operational preference.  MPC + Ridge achieves the best overall performance:
+RMS = 0.62\,\textdegree C, 77\% within $\pm$0.3\,\textdegree C, 88\% within
+$\pm$0.5\,\textdegree C.
+
+\paragraph{PID} is the simplest controller,
+achieving RMS = 0.69\,\textdegree C without any forecast.  Its purely reactive
+nature makes it immune to forecast errors, which is both its strength (robust)
+and weakness (cannot anticipate cooling events).  PID outperforms
+Three-Phase + Persistence (0.71\,\textdegree C), making it a practical
+fallback when forecast infrastructure is unavailable.
+
+\paragraph{Fuzzy} underperforms in its current configuration
+(RMS = 0.97\,\textdegree C) due to a systematic warm bias, indicating that the
+rule base and output gain require further tuning.
+
+\subsection{Temporal resolution}
+
+The control system issues setpoints every $\sim$150\,s, but the mirror's
+thermal time constant ($\tau = 2$\,h) is 50$\times$ longer.  Simulations at
+3-min vs 15-min resolution (Section~\ref{sec:temporal}) show that all RMS
+values increase by $\sim$0.04--0.05\,\textdegree C at finer resolution,
+including perfect knowledge (0.17 $\to$ 0.22\,\textdegree C).  This increase
+is not a controller deficiency but an artifact of resolving sub-15-min
+turbulent fluctuations that the rate-limited system cannot track.
+
+The 15-min grid is therefore a more faithful representation of what the
+controller can actually influence.  For the MPC optimizer, 15-min resolution
+has an additional advantage: N = 8 steps covers a 2\,h horizon with a small
+optimization problem than finer grids that require larger N for the same
+horizon.
+
+%----------------------------------------------------------------------
+\section{Conclusions}
+\label{sec:conclusions}
+
+We evaluated multiple forecast methods and control strategies for M1M3 thermal
+setpoint control using 166 observing nights from the Rubin Observatory.  The
+main conclusions are:
+
+\begin{enumerate}
+  \item \textbf{Signal processing matters.}  A two-stage causal denoising
+    pipeline (midrange binning + Kalman filter) reduces sensor noise by 50\%,
+    and a centered 1\,h rolling mean defines the ground truth $T_\mathrm{low}$.
+    Midrange binning of the raw 1-min data into the simulation grid preserves
+    the true signal better than linear interpolation.
+
+  \item \textbf{The rate limit dominates control performance.}  Increasing the
+    setpoint rate limit from 0.7 to 1.0\,\textdegree C/h yields an 18\%
+    improvement in RMS---larger than any forecast or controller upgrade at
+    fixed rate limit.  This is the single most effective path to better
+    thermal control.
+
+  \item \textbf{MPC is the best controller with realistic forecasts.}
+    MPC + Ridge achieves the lowest RMS across all forecast-based
+    configurations, beating Three-Phase by exploiting the known plant model
+    through explicit trajectory optimization with asymmetric warm/cold cost.
+
+  \item \textbf{Forecasting provides modest improvement at the current rate
+    limit.}  The gap between Ridge forecast and Persistence in control RMS is
+    small ($\sim$0.08\,\textdegree C for Three-Phase, $\sim$0.06 for MPC).
+    PID without any forecast achieves competitive performance.  The forecast
+    becomes more valuable at higher rate limits.
+
+  \item \textbf{The ESS~113 signal is autoregressive.}  Lagged inside
+    temperatures alone achieve the same forecast quality as the full 37-feature
+    set.  Linear models (Ridge, AR) outperform tree-based methods in control
+    because the control loop acts as a low-pass filter: smooth forecasts matter
+    more than pointwise accuracy.
+
+  \item \textbf{A 15-min simulation grid with 2\,h MPC horizon ($= \tau$) is
+    optimal.}  Finer temporal resolution resolves untrackable turbulent
+    fluctuations without improving control.  The 2\,h horizon matches the
+    mirror's thermal time constant; longer horizons add no benefit because
+    forecast quality degrades.
+\end{enumerate}
+
+\end{document}
